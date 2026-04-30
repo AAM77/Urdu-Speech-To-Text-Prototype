@@ -1,0 +1,286 @@
+CONTEXT SUMMARY FOR NEXT CHATGPT 5.5 SESSION
+Urdu Audio Transcription, Translation, and Article Generation Prototype
+
+Purpose of this context file
+============================
+This file summarizes the context and decisions from the prior chat session. It is intended to be passed together with the prototype instruction file:
+
+  cursor_urdu_article_prototype_opus_instructions_v1.txt
+
+The next ChatGPT 5.5 session should use both files to generate a detailed, high-quality development plan for a fast usable prototype. The user is short on time and wants Cursor, preferably using Anthropic Claude Opus in Cursor, to generate the implementation with minimal additional back-and-forth.
+
+
+High-level project goal
+=======================
+The user wants a local or locally runnable prototype that can:
+
+1. Accept Urdu audio, including audio that may contain Urdu, Arabic phrases, and English code-switching.
+2. Chunk the audio.
+3. Transcribe the chunks into Urdu script.
+4. Translate the Urdu transcript into high-quality American English.
+5. Generate a polished standalone American English article from the translated text.
+6. Preserve enough modularity that each stage can be run independently, downloaded, uploaded, and manually handed off to the next stage.
+7. Keep cost controlled and avoid expensive accidental full-pipeline reruns.
+
+This is not yet the full production application. The current priority is a practical prototype that the user can start using quickly while still being organized, modular, accurate, and safe enough not to become throwaway slop.
+
+
+Important user constraint
+=========================
+The user is very short on time.
+
+They explicitly said they need to quickly create and use a prototype so they can transcribe, translate, and generate the English article with fairly high accuracy.
+
+They are okay with Cursor's Opus model taking care of most/all implementation details, but they want the instructions to be comprehensive enough that Opus produces a detailed and high-quality plan and implementation.
+
+The next assistant should avoid over-engineering a full production distributed system at this stage. It should generate a practical detailed plan for the prototype described in the prototype instruction file.
+
+
+Primary prototype recommendation already made
+=============================================
+For the urgent prototype, the prior assistant recommended:
+
+- Use exactly one chunk size by default.
+- Use exactly one paid AI pass per stage by default.
+- Recommended chunking strategy: 5-minute chunks with 60-second overlap.
+- Do not use all four chunk sizes for the prototype.
+- Do not perform multi-pass transcription/translation/review unless the user explicitly chooses to do so later.
+
+Reasoning:
+- 5-minute chunks are a good balance between context and cost.
+- They are long enough to preserve lecture context better than very short chunks.
+- They are short enough to retry and process safely.
+- They avoid the high cost and complexity of processing 3-, 5-, 10-, and 30-minute chunk sets simultaneously.
+
+
+Cost-control decisions
+======================
+The user wants strong cost limits.
+
+Budget preferences:
+- Ideal total cost: below $30.
+- Absolute hard cap: do not exceed $60.
+
+The previous discussion estimated that a sane best-quality run for a 60-minute audio file using one chunk set could plausibly be around $4-$8, while a full all-four-chunk-set strategy could be more like $12-$30 or higher depending on downstream passes and reviews. A careless max-cost strategy with repeated full context, retries, and cross-provider review could exceed $60.
+
+The prototype should therefore:
+- Default to one chunk set only: 5-minute chunks.
+- Default to one pass per stage.
+- Estimate cost before paid API calls.
+- Avoid processing all chunk sets unless explicitly approved.
+- Avoid cross-provider review in the prototype default.
+- Avoid broad rolling/full-context prompts by default.
+- Avoid retry loops that can cause API cost spikes.
+- Mock/fake all provider calls in tests.
+- Never make paid API calls in the test suite.
+
+
+Model decisions already discussed
+=================================
+Transcription:
+- Recommended OpenAI quality candidate: gpt-4o-transcribe.
+- Recommended economy candidate: gpt-4o-mini-transcribe, but not the default unless evals prove it is acceptable.
+- Recommended timestamp-precision candidate: whisper-1 or another timestamp-capable ASR provider, but not needed for the first prototype if synthetic/segment-level chunk timestamps are enough.
+- Recommended diarization candidate: gpt-4o-transcribe-diarize only if speaker labels are needed. Speaker labels are not a default prototype requirement.
+
+Why not GPT-5.5 for direct transcription:
+- GPT-5.5/GPT-5.4 are text/image-input models and are not the current dedicated OpenAI speech-to-text transcription models.
+- Use GPT-5.5/GPT-5.4 after transcription for cleanup, translation, article generation, and review, not for direct batch audio transcription unless OpenAI later releases a dedicated STT-capable GPT-5.x transcription model.
+
+Translation/article generation:
+- Best quality default: gpt-5.5, configurable.
+- Balanced fallback: gpt-5.4, configurable.
+- Economy fallback: gpt-5.4-mini only if the user later wants cheaper runs and evals prove acceptable.
+
+Cursor coding/planning model:
+- Use Cursor's strongest available model for planning and implementation.
+- User specifically wants Cursor's Opus model to generate the prototype with minimal input.
+- Avoid mini/nano/haiku-tier models for architecture, prompt-sensitive work, safety rules, or cost-control code.
+
+Provider model IDs should be configuration-driven, not hardcoded throughout business logic.
+
+
+Major evolution of the instruction files in the prior session
+=============================================================
+1. The user uploaded a large full-production-style instruction file for Cursor.
+2. The prior assistant reviewed it and concluded it was generally strong but too heavy for urgent prototyping.
+3. The prior assistant pointed out that the model recommendations were mostly valid but needed careful wording around transcription model capabilities, timestamp support, and provider abstraction.
+4. The user emphasized cost limits and modularity.
+5. A complete updated full-production instruction document was generated with:
+   - cost guardrails,
+   - $30 ideal budget,
+   - $60 hard cap,
+   - modular service handoff,
+   - manual upload/download between stages,
+   - stage-by-stage resumability.
+6. The user then added that users should be able to choose:
+   - how many AI passes to run,
+   - which chunk length set(s) to process,
+   - with default paid processing limited to the 5-minute chunk set.
+7. A v5 full instruction document was generated with those controls.
+8. The user then clarified that they are short on time and now need a fast prototype, not the full system.
+9. A prototype-specific instruction file was generated:
+
+   cursor_urdu_article_prototype_opus_instructions_v1.txt
+
+The next GPT 5.5 session should focus on this prototype instruction file, not the larger full-production app, unless something from the larger context is directly useful.
+
+
+Desired prototype architecture
+==============================
+The prototype should be local-first and fast to build.
+
+Preferred approach from the prior assistant:
+- Python-first prototype.
+- Streamlit UI for fastest usability.
+- CLI support for every stage.
+- Simple local filesystem artifact storage.
+- Optional simple JSON manifests.
+- Avoid database-heavy production architecture unless needed.
+- Do not build a full Next.js/T3/frontend/backend production app for the urgent prototype.
+
+The prototype should still be modular:
+- chunker stage
+- transcription stage
+- translation stage
+- article generation stage
+- optional review/eval utilities
+
+Each stage should be runnable independently from CLI and/or Streamlit UI.
+Each stage should accept the previous stage's output as an uploaded/imported artifact.
+Each stage should produce downloadable outputs and manifests.
+
+
+Manual handoff requirement
+==========================
+This is important to the user.
+
+The prototype must avoid forcing the user to restart from raw audio after every failure or change.
+
+Required behavior:
+- User can upload raw audio and run chunking.
+- User can download chunk artifacts/metadata.
+- User can upload chunk artifacts into transcription.
+- User can download Urdu transcript artifacts.
+- User can upload Urdu transcript artifacts into translation.
+- User can download English translation artifacts.
+- User can upload translation artifacts into article generation.
+- User can download final article.
+
+Artifacts should include both:
+- human-readable files, such as .txt or .md
+- machine-readable files, such as .json manifests
+
+Manifests should preserve metadata such as:
+- stage name
+- schema version
+- input hashes/checksums where practical
+- model provider and model ID
+- prompt version
+- chunk size and overlap
+- segment IDs
+- estimated cost and usage metadata where available
+- upstream artifact references where available
+
+
+Prompt preservation and religious/linguistic requirements
+=========================================================
+The user cares about religious and linguistic accuracy.
+
+Important content requirements:
+- Urdu audio may contain Urdu, Arabic, and English.
+- Transcription stage should output Urdu script, not translation.
+- Translation stage should output American English.
+- Article generation should produce a polished standalone American English article.
+- The system should account for Maturidi, Hanafi, and tasawwuf-oriented religious terminology and nuance.
+- It should not hallucinate theological claims not present in the audio/source text.
+- It should preserve uncertainty rather than aggressively guessing.
+- For transcription, unclear content should be marked rather than invented.
+- For translation/article stages, use Hans Wehr-style transliteration for Arabic/Urdu religious terminology where appropriate.
+- Article output should be clear, dignified, natural American English.
+
+One important correction discussed:
+- For transcription, do not overuse the theological perspective prompt in a way that causes the model to fill in unclear audio with plausible religious content.
+- Better wording: use religious terminology guidance to avoid mishearing technical terms, but do not infer or add content that is not clearly present. Mark unclear sections.
+
+
+Testing expectations for prototype
+==================================
+The full production document emphasized strict TDD. For the urgent prototype, keep tests practical but still safe.
+
+Prototype testing should include:
+- unit tests for chunk metadata calculation
+- artifact manifest validation tests
+- import/export tests for stage handoff
+- fake provider tests for transcription/translation/article services
+- cost-estimation tests
+- no real API calls in tests
+- prompt construction tests for source-of-truth labeling
+- basic smoke test for CLI or Streamlit flows if practical
+
+Do not make the prototype so test-heavy that it delays usability too much, but do not skip the critical safety tests around API calls, modular artifacts, and cost.
+
+
+What the next GPT 5.5 session should produce
+============================================
+The user is going to pass this context file and the prototype instruction file to a new ChatGPT 5.5 session.
+
+That next session should generate:
+
+1. A detailed implementation plan for the prototype.
+2. A practical phase-by-phase plan that Cursor's Opus model can follow.
+3. A plan that is detailed enough for high-quality generation but not so slow/heavy that it becomes the full production app.
+4. Clear file/module structure.
+5. Clear modular artifact boundaries.
+6. Clear commands to run locally.
+7. Clear Cursor execution instructions.
+8. Clear testing expectations using fake providers.
+9. Clear stopping/checkpoint behavior, but not excessive micromanagement that slows the prototype unnecessarily.
+
+Recommended plan phases:
+- Phase 0: repo setup and environment
+- Phase 1: artifact schemas and config
+- Phase 2: chunker
+- Phase 3: provider interfaces and fake providers
+- Phase 4: transcription stage with real OpenAI provider behind config
+- Phase 5: translation stage
+- Phase 6: article generation stage
+- Phase 7: Streamlit UI
+- Phase 8: manual import/export workflow polish
+- Phase 9: cost estimate/reporting and final smoke test
+
+The plan should prioritize making the prototype usable quickly.
+
+
+Important warnings for next session
+===================================
+Do not turn the prototype plan back into the full production app.
+Do not require a complex distributed microservice system.
+Do not require PostgreSQL, Redis, Docker Compose, Next.js, Prisma, or tRPC unless absolutely necessary for the prototype.
+Do not process all four chunk sizes by default.
+Do not recommend multiple passes by default.
+Do not include cross-provider review by default.
+Do not make real API calls in tests.
+Do not hardcode model IDs deep inside business logic.
+Do not force the user to rerun the whole pipeline after each stage.
+
+
+Current prototype defaults to preserve
+======================================
+- Chunk size: 5 minutes.
+- Overlap: 60 seconds.
+- AI passes per stage: 1.
+- Transcription model: gpt-4o-transcribe.
+- Translation model: gpt-5.5, configurable fallback to gpt-5.4.
+- Article model: gpt-5.5, configurable fallback to gpt-5.4.
+- Budget target: under $30.
+- Hard cap: $60.
+- UI: Streamlit.
+- Storage: local filesystem artifacts.
+- Tests: fake providers only.
+- Manual handoff: required at every stage.
+
+
+End goal for the user
+=====================
+The user wants to be able to run the prototype as soon as it is implemented, upload a 60-minute Urdu religious lecture, get a usable Urdu transcript, get an American English translation, and generate a polished English article, while preserving downloadable artifacts at every stage and avoiding accidental cost spikes.

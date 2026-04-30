@@ -1,0 +1,765 @@
+CURSOR OPUS PROTOTYPE PLANNING INSTRUCTIONS
+Urdu Audio Transcription → Urdu-to-English Translation → American English Article
+Fast, Modular, High-Accuracy Prototype
+
+Version: Prototype v1
+Goal: Create a usable local prototype quickly.
+Default processing: one pass, one chunk size, 5-minute chunks with controlled overlap.
+Budget target: under $30 per 60-minute audio file.
+Hard cost cap: $60.
+
+==================================================
+PURPOSE
+==================================================
+
+Use this document as the prompt/instruction document for Cursor using its strongest available Opus-class model.
+
+The goal is NOT to build the full production application yet.
+
+The goal is to quickly build a high-quality local prototype that can:
+
+1. Accept an Urdu audio file that may contain Urdu, Arabic, and English.
+2. Split it into one selected chunk set.
+3. Transcribe the chunks into Urdu script.
+4. Merge/reconcile the chunk transcripts into one clean Urdu transcript.
+5. Translate the Urdu transcript into American English with religious/technical nuance preserved.
+6. Generate one cohesive American English article.
+7. Save and download every stage output.
+8. Allow the user to manually upload any prior-stage artifact into the next stage.
+9. Avoid rerunning expensive previous stages.
+10. Stay under a $30 target whenever reasonably possible and never exceed $60.
+
+Cursor/Opus should generate a detailed implementation plan first, then implement the prototype in modular, testable batches.
+
+==================================================
+HIGH-LEVEL PROTOTYPE DECISION
+==================================================
+
+Use a Python-first local prototype.
+
+Recommended stack:
+- Python 3.12+
+- OpenAI Python SDK
+- pydantic for schemas/artifact validation
+- pytest for tests
+- ffmpeg/ffprobe through subprocess or ffmpeg-python for audio chunking
+- Streamlit for the fastest local UI
+- Typer or argparse for CLI commands
+- Local filesystem artifacts
+- .env for API keys
+- JSON manifests for resumability
+- Markdown/text downloads for human-readable outputs
+
+Avoid for this prototype unless absolutely necessary:
+- multi-service Docker orchestration
+- Redis queues
+- Kubernetes
+- full authentication
+- PostgreSQL
+- Prisma
+- T3 stack
+- tRPC
+- complex background workers
+- multi-provider bake-off
+- all-four-chunk-set processing
+- diarization
+- word-level timestamp processing
+- cross-provider review
+
+Reason:
+The user is short on time and wants to start using the system as soon as possible. A Python-first local prototype with clean modular boundaries is faster to implement and easier to run while still preserving the path toward the production architecture later.
+
+==================================================
+DEFAULT CHUNKING RECOMMENDATION
+==================================================
+
+Use exactly one chunk set by default:
+
+- Chunk length: 5 minutes
+- Overlap: 60 seconds
+- Reason: 5-minute chunks are the best prototype compromise between accuracy, cost, context size, retry size, and implementation simplicity.
+- Do not generate or transcribe 3-minute, 10-minute, or 30-minute chunk sets in the default prototype run.
+- Do not transcribe all four chunk sets.
+- Do not process multiple chunk sizes unless the user explicitly enables an advanced option later.
+
+Important:
+"Single chunk set" does not mean no overlap. Use one 5-minute chunk set with 60-second overlap. Each chunk is transcribed once. The overlap is used only to reduce boundary loss and support transcript reconciliation.
+
+==================================================
+MODEL DEFAULTS FOR PROTOTYPE
+==================================================
+
+All model IDs must be configurable in config, not hardcoded throughout the codebase.
+
+Default model roles:
+
+1. Transcription:
+   - role: transcription_quality_model
+   - default model: gpt-4o-transcribe
+   - purpose: speech-to-text from Urdu/Arabic/English mixed audio to Urdu-script transcript
+   - note: do not use GPT-5.5 for direct transcription because it is not the dedicated transcription model.
+
+2. Translation:
+   - role: translation_quality_model
+   - default model: gpt-5.5
+   - fallback model: gpt-5.4 if gpt-5.5 is unavailable or too costly
+   - purpose: Urdu transcript to accurate American English translation
+
+3. Article generation:
+   - role: article_quality_model
+   - default model: gpt-5.5
+   - fallback model: gpt-5.4 if gpt-5.5 is unavailable or too costly
+   - purpose: generate polished 8th-grade American English article
+
+4. Transcript reconciliation:
+   - role: reconciliation_quality_model
+   - default model: gpt-5.5
+   - fallback model: deterministic overlap dedupe + gpt-5.4 if cost requires
+
+5. Optional validation:
+   - role: validation_model
+   - default model: gpt-5.4-mini only if needed
+   - purpose: cheap output checks, never theological final authority
+
+Before implementing real API calls, Cursor must verify:
+- exact model IDs
+- current API endpoint requirements
+- input/output formats
+- pricing
+- whether the selected model supports the needed endpoint
+- max file size and request limits
+- response shape
+
+Unit tests must never call real APIs.
+
+==================================================
+COST LIMITS
+==================================================
+
+Budget target:
+- Try to keep a 60-minute audio file under $30 total.
+
+Hard cap:
+- Never exceed $60.
+- The backend/core pipeline must enforce the cap.
+- The UI alone is not sufficient.
+
+Prototype default:
+- One 5-minute chunk set only.
+- One transcription pass.
+- One reconciliation pass.
+- One translation pass.
+- One article generation pass.
+- No cross-provider review.
+- No multi-chunk-size eval.
+- No expensive repeated full-context processing.
+- No blind retries.
+
+Cost controls:
+- Estimate transcription minutes before calling the transcription API.
+- Estimate text model tokens before translation/article calls.
+- Show estimated cost by stage before the run starts.
+- Require user confirmation before any paid API call.
+- Include a 20% safety margin in estimates.
+- Pause before making a call if projected cost plus safety margin would exceed the budget.
+- Block calls if projected total would exceed $60.
+- Cache outputs so rerunning the same stage does not repeat paid calls.
+- Use checksums/hashes for cache keys.
+
+Cache keys must include:
+- input file hash or input text hash
+- stage name
+- model provider
+- model ID
+- prompt version
+- chunk length
+- overlap
+- context mode
+- relevant model parameters
+
+==================================================
+MODULARITY REQUIREMENT
+==================================================
+
+Each stage must be independently runnable.
+
+Required stages:
+
+1. Chunker
+   Input:
+   - raw audio file
+   Output:
+   - chunks/
+   - chunk_manifest.json
+   - human-readable chunk summary
+
+2. Transcriber
+   Input:
+   - chunk_manifest.json
+   - chunks/
+   Output:
+   - raw_urdu_transcript.json
+   - raw_urdu_transcript.md
+   - transcript_manifest.json
+
+3. Transcript Reconciler
+   Input:
+   - raw_urdu_transcript.json
+   Output:
+   - reconciled_urdu_transcript.json
+   - reconciled_urdu_transcript.md
+   - reconciliation_manifest.json
+
+4. Translator
+   Input:
+   - reconciled_urdu_transcript.json or reconciled_urdu_transcript.md
+   Output:
+   - english_translation.json
+   - english_translation.md
+   - translation_manifest.json
+
+5. Article Generator
+   Input:
+   - english_translation.json or english_translation.md
+   Output:
+   - final_article.json
+   - final_article.md
+   - article_manifest.json
+
+6. Exporter
+   Input:
+   - any stage artifacts
+   Output:
+   - downloadable individual files
+   - optional ZIP of safe artifacts
+
+Each stage must support:
+- running from the UI
+- running from CLI
+- importing/downloading artifacts
+- continuing from existing artifacts
+- validating prior-stage artifacts
+- refusing wrong-stage artifacts safely
+- no dependency on in-memory state
+
+Manual handoff must work:
+- User can run chunker, download chunk artifact, later upload it into transcriber.
+- User can run transcriber, download Urdu transcript, later upload it into translator.
+- User can run translator, download English translation, later upload it into article generator.
+- User can skip directly to translation if they already have a transcript.
+- User can skip directly to article generation if they already have English translation.
+
+==================================================
+ARTIFACT FORMAT
+==================================================
+
+Every stage must produce:
+
+1. Human-readable output:
+   - Markdown or .txt
+
+2. Machine-readable output:
+   - JSON artifact
+
+3. Manifest:
+   - JSON manifest containing metadata and compatibility information
+
+Minimum manifest fields:
+- artifact_id
+- schema_version
+- stage_name
+- created_at
+- source_input_hash
+- upstream_artifact_ids
+- model_provider
+- model_id
+- prompt_id
+- prompt_version
+- chunk_length_seconds, where applicable
+- overlap_seconds, where applicable
+- context_mode
+- estimated_cost
+- actual_usage, if available
+- cache_hit
+- checksum
+- warnings
+- human_review_status
+
+All timestamps must be stored in milliseconds where available.
+
+For prototype:
+- chunk-relative and absolute chunk start/end times are required.
+- model-generated word-level timestamps are not required.
+- segment-level timestamps are helpful but not mandatory if the transcription API does not return them.
+- Synthetic chunk-level timestamp ranges are acceptable for the prototype.
+
+==================================================
+PROJECT STRUCTURE
+==================================================
+
+Cursor should propose and then implement a structure similar to:
+
+/urdu-article-prototype
+  /src
+    /urdu_pipeline
+      /config
+        settings.py
+        model_roles.py
+        pricing.py
+      /schemas
+        artifacts.py
+        chunks.py
+        transcripts.py
+        translations.py
+        articles.py
+      /prompts
+        transcription_v1.md
+        translation_v1.md
+        article_v1.md
+        reconciliation_v1.md
+      /stages
+        chunker.py
+        transcriber.py
+        transcript_reconciler.py
+        translator.py
+        article_generator.py
+      /providers
+        openai_audio.py
+        openai_text.py
+        fake_provider.py
+      /costs
+        estimator.py
+        budget_guard.py
+      /cache
+        cache_keys.py
+        artifact_cache.py
+      /artifacts
+        store.py
+        validators.py
+        exporter.py
+      /ui
+        streamlit_app.py
+      /cli.py
+      /logging_utils.py
+  /tests
+    /unit
+    /integration_safe
+    /fixtures
+  /runs
+    .gitkeep
+  .env.example
+  requirements.txt
+  README.md
+
+The exact structure may be improved, but do not collapse everything into one script.
+
+==================================================
+PROMPTS
+==================================================
+
+Prompts must be versioned files.
+
+Do not bury prompts inside random Python strings unless they are loaded from prompt files.
+
+Transcription prompt:
+- Output Urdu script only.
+- Do not translate into English.
+- Preserve spoken English words.
+- Preserve Arabic phrases where spoken.
+- Mark unclear audio as [غیر واضح].
+- Do not hallucinate.
+- Use religious terminology awareness only to avoid mishearing terms, not to invent content.
+
+Translation prompt:
+- Input is Urdu text, not audio.
+- Output is American English.
+- Preserve meaning, nuance, religious terminology, idioms, and detail.
+- Do not summarize unless instructed.
+- Use Hans Wehr-style transliteration for technical Arabic/Urdu religious terms where appropriate.
+- For technical/religious terms, use English translation first followed by italicized transliteration in parentheses.
+- Preserve uncertainty markers.
+
+Article prompt:
+- Input is English translation, not audio.
+- Output is one cohesive American English article.
+- Target 8th-grade reading level.
+- Preserve theological nuance and dignity.
+- Do not introduce new claims.
+- Use logical headings and paragraph breaks.
+- Remove transcript-like filler.
+- Preserve important religious terminology.
+
+Reconciliation prompt:
+- Merge overlapping chunk transcripts.
+- Remove duplicate overlap content.
+- Preserve the best wording.
+- Do not add new content.
+- Preserve uncertainty markers.
+- Keep source chunk references where possible.
+
+==================================================
+PROTOTYPE PIPELINE BEHAVIOR
+==================================================
+
+Default one-click pipeline:
+
+1. User uploads audio.
+2. App probes duration and file metadata.
+3. App estimates cost.
+4. App shows:
+   - selected chunk length: 5 minutes
+   - overlap: 60 seconds
+   - transcription model
+   - translation model
+   - article model
+   - estimated cost
+   - budget
+5. User confirms.
+6. Chunker creates chunks.
+7. Transcriber transcribes each chunk once.
+8. Reconciler merges/deduplicates overlap.
+9. Translator translates reconciled transcript.
+10. Article generator creates final article.
+11. App shows downloadable outputs for every stage.
+
+The user must also be able to run each stage separately.
+
+==================================================
+UI REQUIREMENTS
+==================================================
+
+Use Streamlit for speed unless Cursor proposes a clearly faster/equally simple alternative.
+
+Required UI tabs:
+
+1. Full Pipeline
+   - Upload audio
+   - Show detected duration
+   - Show estimated cost
+   - Start run
+   - Show progress
+   - Download all outputs
+
+2. Chunker
+   - Upload audio
+   - Run 5-minute chunking
+   - Download chunk manifest and chunks ZIP
+
+3. Transcription
+   - Upload chunk artifact or use current run
+   - Run transcription
+   - Download Urdu transcript JSON/MD
+
+4. Reconciliation
+   - Upload raw Urdu transcript artifact or use current run
+   - Run reconciliation
+   - Download reconciled Urdu transcript JSON/MD
+
+5. Translation
+   - Upload reconciled Urdu transcript or use current run
+   - Run translation
+   - Download English translation JSON/MD
+
+6. Article
+   - Upload English translation or use current run
+   - Generate article
+   - Download final article JSON/MD
+
+7. Settings
+   - API key status, without showing key
+   - model roles
+   - budget
+   - chunk length locked to 5 minutes by default
+   - overlap seconds
+   - output folder
+   - dry-run/fake-provider mode
+
+UI must not expose secrets.
+
+==================================================
+CLI REQUIREMENTS
+==================================================
+
+Provide a CLI so stages can be run outside the UI.
+
+Commands:
+
+python -m urdu_pipeline.cli estimate --audio path/to/audio.mp3
+
+python -m urdu_pipeline.cli chunk --audio path/to/audio.mp3 --out runs/job_id
+
+python -m urdu_pipeline.cli transcribe --chunk-manifest runs/job_id/chunk_manifest.json
+
+python -m urdu_pipeline.cli reconcile --transcript runs/job_id/raw_urdu_transcript.json
+
+python -m urdu_pipeline.cli translate --transcript runs/job_id/reconciled_urdu_transcript.json
+
+python -m urdu_pipeline.cli article --translation runs/job_id/english_translation.json
+
+python -m urdu_pipeline.cli run-all --audio path/to/audio.mp3 --budget 30
+
+python -m urdu_pipeline.cli validate-artifact --artifact path/to/artifact.json
+
+==================================================
+TESTING REQUIREMENTS
+==================================================
+
+Use tests, but keep prototype testing practical.
+
+Tests must be created before implementation for each core module.
+
+No tests may call paid APIs.
+
+Use fake providers for tests.
+
+Required tests:
+
+Config:
+- loads .env safely
+- missing API key blocks real provider mode
+- fake provider works without API key
+- model roles resolve correctly
+
+Chunker:
+- creates 5-minute chunks with 60-second overlap
+- final chunk may be shorter
+- chunk manifest includes source hash
+- chunk timestamps are correct
+- unsafe filename does not create unsafe path
+
+Artifacts:
+- creates manifest with required fields
+- checksum validation works
+- wrong-stage artifact is rejected
+- valid artifact can be imported into next stage
+
+Cost:
+- estimates transcription minutes
+- estimates text model cost
+- includes 20% safety margin
+- blocks projected cost over budget
+- hard stops at $60
+- missing pricing blocks real API calls
+
+Cache:
+- identical input/model/prompt config creates same cache key
+- changed model changes cache key
+- changed prompt version changes cache key
+- cache hit skips fake provider call
+
+Transcription:
+- fake transcription provider returns Urdu-script test output
+- transcriber saves JSON and Markdown outputs
+- raw transcript includes chunk references
+- real provider is not called in unit tests
+
+Reconciliation:
+- overlap duplicate text is removed in a simple deterministic fixture
+- uncertainty markers are preserved
+- source chunk references are preserved where possible
+
+Translation:
+- fake provider creates English translation artifact
+- translator accepts uploaded reconciled transcript artifact
+- translator rejects wrong artifact type
+
+Article:
+- article generator accepts English translation artifact
+- article output includes title and paragraphs
+- article generator rejects Urdu transcript artifact
+
+UI smoke tests:
+- Streamlit app imports without crashing
+- key pipeline functions are callable from UI layer
+
+Do not overbuild testing infrastructure.
+
+==================================================
+IMPLEMENTATION MODE FOR CURSOR OPUS
+==================================================
+
+Cursor should operate in "fast autonomous prototype mode."
+
+Cursor must:
+1. First generate a detailed prototype plan.
+2. Keep the plan focused on this prototype, not the full production system.
+3. Implement in batches.
+4. Avoid asking the user questions unless blocked.
+5. Use sensible defaults from this document.
+6. Stop only at major checkpoints, not every tiny function.
+7. Never make real paid API calls during tests.
+8. Never commit secrets.
+9. Keep code modular and readable.
+10. Create a README with setup and run instructions.
+
+Major checkpoints:
+- Checkpoint 1: project skeleton, config, fake providers, artifact schemas
+- Checkpoint 2: chunker, artifact store, cost estimator
+- Checkpoint 3: transcription stage with fake provider and real OpenAI provider behind config
+- Checkpoint 4: reconciliation, translation, article stages
+- Checkpoint 5: Streamlit UI and CLI
+- Checkpoint 6: end-to-end fake-provider test and README
+
+At each checkpoint, Cursor should show:
+- files changed
+- tests added
+- how to run tests
+- how to run the app
+- known limitations
+- next checkpoint
+
+Do not stop after every micro-step unless there is a real blocker.
+
+==================================================
+REAL API CALL SAFETY
+==================================================
+
+Real API calls are allowed only when:
+- user has provided OPENAI_API_KEY in .env
+- the app is not running in test mode
+- the user confirms cost estimate in UI or CLI
+- the projected cost stays under budget with safety margin
+- the projected cost stays below $60
+- the stage has no valid cached output
+
+Environment variables:
+- OPENAI_API_KEY
+- PIPELINE_PROVIDER_MODE=fake|real
+- DEFAULT_BUDGET_USD=30
+- HARD_CAP_USD=60
+- TRANSCRIPTION_MODEL=gpt-4o-transcribe
+- TRANSLATION_MODEL=gpt-5.5
+- ARTICLE_MODEL=gpt-5.5
+- RECONCILIATION_MODEL=gpt-5.5
+
+Never print API keys.
+Never log raw audio payloads.
+Do not log full transcripts/translations by default.
+Logs may include job ID, stage, model ID, cost estimate, cache hit/miss, and safe error messages.
+
+==================================================
+ACCURACY GUARDRAILS
+==================================================
+
+For high accuracy in the prototype:
+
+1. Use 5-minute chunks with 60-second overlap.
+2. Use the transcription prompt with Urdu script only.
+3. Use a short glossary/context section in prompts for Islamic terms.
+4. Preserve uncertainty markers.
+5. Reconcile overlap before translation.
+6. Translate the reconciled Urdu transcript, not each raw chunk independently, unless the transcript is too long.
+7. If transcript is too long for one translation call, split by timestamped segments and carry forward a small terminology context packet.
+8. Generate the article from the reconciled English translation.
+9. Do not allow article generation directly from raw chunk transcripts unless translation exists.
+10. Do not hide uncertainty; carry it through.
+
+Prototype glossary should be editable in:
+src/urdu_pipeline/prompts/glossary.md
+
+The glossary may include:
+- Allāh
+- ṣallā Allāhu ʿalayhi wa-sallam
+- raḥmatullāhi ʿalayh
+- nawwara Allāhu marqadahu
+- taqwā
+- tawāḍuʿ
+- ḥadīth
+- sunnah
+- sharīʿah
+- fiqh
+- Māturīdī
+- Ḥanafī
+- taṣawwuf
+- ʿulamāʾ
+
+Do not force transliteration in the Urdu transcript stage.
+
+==================================================
+README REQUIREMENTS
+==================================================
+
+Create a README that explains:
+
+1. What the prototype does.
+2. What it does not do yet.
+3. How to install ffmpeg.
+4. How to create a virtual environment.
+5. How to install dependencies.
+6. How to create .env from .env.example.
+7. How to run tests.
+8. How to run with fake providers.
+9. How to run with real OpenAI providers.
+10. How to use the Streamlit UI.
+11. How to use the CLI.
+12. Where outputs are saved.
+13. How to resume from a downloaded artifact.
+14. How budget controls work.
+15. How to change models.
+16. How to change prompts.
+17. How to troubleshoot common errors.
+
+==================================================
+ACCEPTANCE CRITERIA
+==================================================
+
+The prototype is usable when:
+
+1. User can upload a 60-minute audio file.
+2. App can split it into 5-minute chunks with 60-second overlap.
+3. App can estimate cost before paid API calls.
+4. App refuses to exceed $60.
+5. App can transcribe chunks into Urdu script using the configured transcription model.
+6. App can save raw Urdu transcript JSON and Markdown.
+7. App can reconcile overlaps into one Urdu transcript.
+8. App can translate the reconciled Urdu transcript into American English.
+9. App can generate a polished American English article.
+10. User can download every stage output.
+11. User can upload a prior-stage artifact into the next stage.
+12. Tests pass without paid API calls.
+13. README explains exactly how to run it.
+14. Secrets are not committed or logged.
+15. All core code is modular enough to migrate into the later production system.
+
+==================================================
+WHAT CURSOR SHOULD OUTPUT FIRST
+==================================================
+
+Cursor should first output only:
+
+1. A concise prototype architecture summary.
+2. The exact project structure.
+3. The implementation checkpoints.
+4. The test plan.
+5. The run commands.
+6. Any assumptions it is making.
+7. A final note asking for permission to begin implementation.
+
+After that, if the user approves, Cursor should begin implementing in checkpoint batches.
+
+If the user says "proceed autonomously," Cursor may complete all checkpoints without asking further questions unless blocked by:
+- missing API key
+- failing dependency installation
+- unclear model availability
+- cost estimate above budget
+- tests failing in a way that requires requirement clarification
+
+==================================================
+NON-NEGOTIABLES
+==================================================
+
+- One chunk size by default: 5 minutes.
+- One pass by default.
+- 60-second overlap by default.
+- Target budget under $30.
+- Hard cap $60.
+- Modular stages.
+- Downloadable artifacts at every stage.
+- Manual upload/import into the next stage.
+- No paid API calls in tests.
+- No secrets in code.
+- No raw sensitive payload logging by default.
+- Configurable model IDs.
+- Prompt files are versioned.
+- Fake providers for tests and dry runs.
+- Usable local prototype over perfect production architecture.

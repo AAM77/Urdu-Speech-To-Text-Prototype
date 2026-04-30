@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "urdu-article-prototype"
+version = "0.1.0"
+description = "Local prototype: Urdu audio -> Urdu transcript -> American English translation -> standalone article."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Urdu Article Prototype Authors" }]
+
+# Dependency versions are intentionally lower-bounded ("compatible release")
+# rather than pinned, so `pip install` picks up patches automatically.
+# When in doubt about latest stable releases, see PyPI:
+#   https://pypi.org/project/openai/
+#   https://pypi.org/project/streamlit/
+#   https://pypi.org/project/pydantic/
+#   https://pypi.org/project/pydantic-settings/
+#   https://pypi.org/project/typer/
+#   https://pypi.org/project/rich/
+#   https://pypi.org/project/tiktoken/
+#   https://pypi.org/project/python-dotenv/
+dependencies = [
+    "openai>=2.30,<3",
+    "pydantic>=2.13,<3",
+    "pydantic-settings>=2.13,<3",
+    "python-dotenv>=1.0,<2",
+    "streamlit>=1.55,<2",
+    "typer>=0.24,<1",
+    "rich>=14.3,<16",
+    "tiktoken>=0.10,<1",
+    "rapidfuzz>=3.10,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0,<10",
+    "pytest-mock>=3.14,<4",
+]
+
+[project.scripts]
+urdu-pipeline = "urdu_pipeline.cli:app"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "real_api: tests that would call paid APIs (must be skipped by default)",
+]
