@@ -26,7 +26,8 @@ if str(_SRC) not in sys.path:
 def _isolate_environment(tmp_path: Path, monkeypatch):
     """Force fake mode + tmp output roots. Must run before settings load."""
     monkeypatch.setenv("PIPELINE_PROVIDER_MODE", "fake")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    # Override any real key loaded from the developer's local `.env`.
+    monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
     monkeypatch.setenv("CACHE_ROOT", str(tmp_path / ".cache_pipeline"))
     monkeypatch.setenv("DEFAULT_BUDGET_USD", "30")

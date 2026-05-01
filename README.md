@@ -19,10 +19,11 @@ metadata (model, prompt version, hashes, cost estimate, cache status, etc.).
 You can stop after any stage, download the artifact, and later upload it back
 into the next stage without re-running earlier paid calls.
 
-The project ships with a Streamlit UI, a Typer CLI, and a deterministic
-**fake-provider mode** so you can exercise everything end-to-end without an
-API key or network access. Real OpenAI calls are gated behind explicit
-configuration and an interactive cost confirmation.
+The project ships with a Streamlit UI, a Typer CLI, a root `Makefile` for
+common stage workflows, and a deterministic **fake-provider mode** so you can
+exercise everything end-to-end without an API key or network access. Real
+OpenAI calls are gated behind explicit configuration and an interactive cost
+confirmation.
 
 ---
 
@@ -159,7 +160,7 @@ cp .env.example .env
 
 The default `.env` runs the prototype in **fake-provider mode** — no API key
 required. Switch to real-provider mode only after you have followed
-[Section 5](#5-using-real-openai-providers).
+[Section 6](#6-using-real-openai-providers).
 
 Important variables:
 
@@ -200,6 +201,8 @@ all use this list, so changing it in one place is enough.
 ## 4. Run tests
 
 The full test suite uses fake providers and never touches the network.
+The examples below assume your virtual environment is already activated.
+If not, replace `python` with `.venv/bin/python`.
 
 ```bash
 # All tests
@@ -208,23 +211,129 @@ python -m pytest
 # Just the unit tests
 python -m pytest tests/unit
 
-# Just the safe end-to-end pipeline test
+# Just the safe integration tests
 python -m pytest tests/integration_safe
+
+# The Makefile orchestration tests only
+python -m pytest tests/integration_safe/test_makefile.py -v
 
 # A single test file with verbose output
 python -m pytest tests/unit/test_chunker.py -v
 ```
 
-Expected: 59 tests pass in well under 5 seconds on a modern laptop.
+Expected: 72 tests pass on the current codebase.
+
+### What the tests cover
+
+- Unit tests for config, schemas, artifacts, cache, costs, chunking, stage
+  logic, and standalone helpers.
+- Safe integration coverage for the fake-provider pipeline end to end.
+- Real subprocess coverage for the `Makefile` wrapper in
+  `tests/integration_safe/test_makefile.py`.
+
+The `Makefile` tests are intentionally not "mock-only" wrapper tests. They:
+
+- invoke `make` as a subprocess
+- run the real CLI entry points for each stage
+- verify prerequisite failures and argument validation
+- verify latest-run auto-resolution
+- verify cumulative `to-*` targets stop at the expected stage
+- verify `CONFIRM_PAID_RUN`, `CHUNK_LENGTH_SECONDS`, and
+  `OVERLAP_SECONDS` are forwarded correctly
+
+To keep those tests deterministic and local, they fake only the external
+`ffprobe` / `ffmpeg` executables with temporary shell shims. The Python
+orchestration and artifact flow are real.
 
 ---
 
-## 5. Run the app in fake-provider mode
+## 5. Run the pipeline in fake-provider mode
 
 Fake mode requires no API key, never makes network calls, and returns
 deterministic output. Use it to check your wiring or to demo the UI.
 
-### 5a. Streamlit UI
+### 5a. Makefile wrapper
+
+The root `Makefile` is the quickest way to run an individual stage or a
+cumulative pipeline sequence without remembering every artifact path.
+
+Show all available targets:
+
+```bash
+make help
+```
+
+Print the latest run directory under `OUTPUT_ROOT`:
+
+```bash
+make latest-run
+```
+
+Single-stage targets:
+
+```bash
+# 1. Run only the chunking stage
+make chunk AUDIO="inputs/your_lecture.mp3"
+
+# 2. Run only transcription on an existing run
+make transcribe RUN_DIR="runs/<run-dir>"
+
+# 3. Run only reconciliation on an existing run
+make reconcile RUN_DIR="runs/<run-dir>"
+
+# 4. Run only translation on an existing run
+make translate RUN_DIR="runs/<run-dir>"
+
+# 5. Run only article generation on an existing run
+make article RUN_DIR="runs/<run-dir>"
+```
+
+If `RUN_DIR` is omitted for `transcribe`, `reconcile`, `translate`, or
+`article`, the Makefile automatically resolves the newest run under
+`OUTPUT_ROOT` and uses that.
+
+Cumulative targets:
+
+```bash
+# 6. Chunk + transcribe
+make to-transcribe AUDIO="inputs/your_lecture.mp3"
+
+# 7. Chunk + transcribe + reconcile
+make to-reconcile AUDIO="inputs/your_lecture.mp3"
+
+# 8. Chunk + transcribe + reconcile + translate
+make to-translate AUDIO="inputs/your_lecture.mp3"
+
+# 9. Chunk + transcribe + reconcile + translate + article
+make to-article AUDIO="inputs/your_lecture.mp3"
+```
+
+Useful overrides:
+
+```bash
+# Real-provider mode requires explicit confirmation for paid stages
+make to-article AUDIO="inputs/your_lecture.mp3" CONFIRM_PAID_RUN=1
+
+# Override chunk sizing for chunk / to-* targets
+make chunk AUDIO="inputs/your_lecture.mp3" CHUNK_LENGTH_SECONDS=240 OVERLAP_SECONDS=45
+
+# Write runs somewhere else for a single command
+make to-translate AUDIO="inputs/your_lecture.mp3" OUTPUT_ROOT="tmp/demo-runs"
+
+# Use a different interpreter if needed
+make chunk AUDIO="inputs/your_lecture.mp3" PYTHON=".venv/bin/python"
+```
+
+Notes:
+
+- `AUDIO=...` is required for `chunk` and all `to-*` targets.
+- `RUN_DIR=...` is optional for single-stage targets after chunking.
+- `CONFIRM_PAID_RUN=1` is only needed for the paid stages in real-provider
+  mode.
+- `OUTPUT_ROOT` is exported into the CLI process, so the Makefile and the app
+  agree on where runs are created and resolved.
+
+### 5b. Streamlit UI
 
 ```bash
 streamlit run src/urdu_pipeline/ui/streamlit_app.py
@@ -235,7 +344,7 @@ Open the URL Streamlit prints (usually <http://localhost:8501>). The
 each artifact once it is ready. Per-stage tabs let you jump in or resume from
 any prior-stage artifact.
 
-### 5b. CLI (full pipeline)
+### 5c. CLI (full pipeline)
 
 ```bash
 python -m urdu_pipeline.cli run-all \
@@ -249,7 +358,7 @@ python -m urdu_pipeline.cli run-all \
 A new directory is created under `runs/<date>_<slug>_<id>/` containing every
 stage's JSON + Markdown output and a `exports/full_run_export.zip`.
 
-### 5c. CLI (per stage)
+### 5d. CLI (per stage)
 
 ```bash
 # Estimate only — no calls, no writes
@@ -403,7 +512,7 @@ artifact. The validator rejects wrong-stage artifacts with a clear error.
 ### CLI
 
 Pass the artifact path with `--chunk-manifest`, `--transcript`, or
-`--translation` as appropriate (see Section 5c). All commands accept the
+`--translation` as appropriate (see Section 5d). All commands accept the
 absolute path to any prior-run artifact JSON.
 
 ---
@@ -441,6 +550,39 @@ real call is made. Fake-provider mode logs a warning instead and continues.
 | Output root | `.env` (`OUTPUT_ROOT`) |
 | Cache root | `.env` (`CACHE_ROOT`) |
 | Budget / hard cap / safety margin | `.env` (`DEFAULT_BUDGET_USD`, `HARD_CAP_USD`, `COST_SAFETY_MARGIN`) |
+
+### Prompt files and backups
+
+The current prompt files used by the pipeline are:
+
+- `src/urdu_pipeline/prompts/transcription_v1.md`
+- `src/urdu_pipeline/prompts/reconciliation_v1.md`
+- `src/urdu_pipeline/prompts/translation_v1.md`
+- `src/urdu_pipeline/prompts/article_v1.md`
+
+The glossary injected into translation lives at:
+
+- `src/urdu_pipeline/prompts/glossary.md`
+
+Backups created during prompt rewrites currently include:
+
+- `src/urdu_pipeline/prompts/transcription_v1.backup_2026-04-30.md`
+- `src/urdu_pipeline/prompts/reconciliation_v1.backup_2026-04-30.md`
+- `src/urdu_pipeline/prompts/translation_v1.backup_2026-04-30.md`
+
+If you change prompt wording and want reruns to bypass cached outputs, do one
+of the following before rerunning:
+
+```bash
+# Option 1: edit .env and bump the prompt version
+PROMPT_VERSION=v2
+
+# Option 2: remove the existing cache directory
+rm -rf .cache_pipeline
+```
+
+The safer default is to bump `PROMPT_VERSION`, because it preserves older
+cached runs for comparison.
 
 ---
 
@@ -510,6 +652,7 @@ Make sure you installed the package in editable mode
 .
 ├── .env.example
 ├── .gitignore
+├── Makefile
 ├── README.md
 ├── pyproject.toml
 ├── requirements.txt
@@ -524,13 +667,24 @@ Make sure you installed the package in editable mode
 │       ├── config/                         ← settings, model roles, pricing
 │       ├── costs/                          ← estimator + budget guard
 │       ├── prompts/                        ← versioned prompts + glossary
+│       │   ├── article_v1.md
+│       │   ├── glossary.md
+│       │   ├── reconciliation_v1.backup_2026-04-30.md
+│       │   ├── reconciliation_v1.md
+│       │   ├── transcription_v1.backup_2026-04-30.md
+│       │   ├── transcription_v1.md
+│       │   ├── translation_v1.backup_2026-04-30.md
+│       │   └── translation_v1.md
 │       ├── providers/                      ← fake + OpenAI (audio + text)
 │       ├── schemas/                        ← Pydantic schemas for artifacts
 │       ├── stages/                         ← chunker / transcriber / etc.
 │       └── ui/streamlit_app.py
 └── tests/
     ├── conftest.py
-    ├── integration_safe/                   ← end-to-end fake-provider tests
+    ├── integration_safe/                   ← subprocess + end-to-end fake-provider tests
+    │   ├── test_fake_pipeline_end_to_end.py
+    │   ├── test_makefile.py
+    │   └── test_streamlit_import.py
     └── unit/                               ← per-module unit tests
 ```
 

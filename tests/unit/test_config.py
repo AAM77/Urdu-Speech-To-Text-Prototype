@@ -20,7 +20,7 @@ def test_fake_mode_works_without_api_key():
 
 def test_real_mode_requires_api_key(monkeypatch):
     monkeypatch.setenv("PIPELINE_PROVIDER_MODE", "real")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "")
     reset_settings_cache()
     s = get_settings()
     assert s.pipeline_provider_mode == "real"
