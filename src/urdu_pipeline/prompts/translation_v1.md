@@ -23,7 +23,8 @@ in the Urdu source.
 10th-grade reading level. The tone should be academic, respectful, and
 suitable for a biographical or historical account. Smooth out any
 conversational phrasing or spoken idiosyncrasies from the source text into
-fluid, cohesive prose.
+fluid, cohesive prose. It would be best if the styling of writing is kept similar 
+to what was in the Urdu text provided as the input.
 
 **Narrative Quality:** The translation should feel like refined book prose:
 well-paced, coherent, and stylistically controlled. Sentences should flow

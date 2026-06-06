@@ -3,7 +3,7 @@
 Please analyze the attached **English-language** audio clip and transcribe it as a
 standalone **American English** text. Assume this is **one chunk** in a sequence
 of audio segments. Preserve meaning faithfully; treat the transcript as prose
-worthy of publication.
+worthy of publication. There might be some Urdu in there, so translate it.
 
 Apply the following strict guidelines to your final output:
 

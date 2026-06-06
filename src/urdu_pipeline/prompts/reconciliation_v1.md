@@ -34,14 +34,39 @@ the final text.
 Urdu so it reads like book prose rather than verbal dictation. You may smooth
 awkward oral constructions, tighten sentence flow, normalize punctuation, and
 improve paragraph transitions. However, do not transform the material into a
-different style, argument, or structure than the source supports.
+different style, argument, or structure than the source supports. The 
+following is a sample of text that matches the flow, styling, and organization 
+we are looking for. The the following Urdu text for determining all this. The 
+final result must the writing style of the following sample:
+بسم اللہ الرحمن الرحیم
+
+الحمد للہ رب العالمین، والصلاۃ والسلام علی سید الانبیاء والمرسلین، وعلی آلہ واصحابہ اجمعین، اما بعد!
+
+یہ کتاب ایک ایسی شخصیت کی حیات و خدمات کا تذکرہ ہے جنہوں نے اپنی زندگی کا بڑا حصہ دینِ اسلام کی خدمت، اہلِ علم و مشائخِ کرام سے وابستگی، اور ان سے حاصل ہونے والی روحانی و عملی رہنمائی کو عام کرنے میں صرف کیا۔زیرِ نظر سوانح عمری والدِ محترم، حضرت ڈاکٹر محمد اسماعیل میمن مدنی نور اللہ مرقدہٗ کی حیات کے مختلف پہلوؤں کو محفوظ کرنے کی ایک ادنیٰ سی کوشش ہے، جس کا مقصد صرف ان کی یادوں کی حفاظت نہیں بلکہ انکی زندگی سے حاصل ہونے والے اسباق کو زندہ رکھنا ہے۔ 
+
+والد محترم باقاعدہ عالمِ دین نہ تھے، لیکن دین سے تعلق اور توفیق ایزدی کی بدولت  ان کی شخصیت اس حقیقت کی جیتی جاگتی مثال تھی کہ اخلاص، صحبتِ صالحین، اور خدمتِ دین کا جذبہ انسان کو کس طرح دین کی خدمت کے اعلیٰ مقامات تک پہنچا دیتا ہے۔انہوں نے اپنی زندگی میں مختلف مشائخِ کرام اور اہلِ علم کی صحبت اختیار کی، ان سے فیض حاصل کیا، اور اسی نسبت کو اپنی عملی زندگی میں نمایاں رکھا۔
+
+آپ کی مساعی کا دائرہ وسیع تھا—آپ نے مختلف ممالک، خصوصاً عرب دنیا میں قیام کے دوران اہلِ علم و مشائخ سے تعلق قائم کیا، اور بعد ازاں امریکہ و کینیڈا میں دینِ اسلام کی اشاعت، دینی اداروں کے قیام، اور نئی نسل کی تربیت کے لیے قابلِ قدر خدمات انجام دیں۔
+
+یہ سوانح عمری محض واقعات کا بیان نہیں، بلکہ ایک ایسی زندگی کا عکس ہے جس میں اخلاص، محنت، اور دین سے سچی وابستگی نمایاں ہے۔ اس کا مقصد والد محترم کی یاد کو محفوظ کرنا اور ان کی زندگی سے رہنمائی حاصل کرنا ہے۔
+
+اللہ تعالیٰ سے دعا ہے کہ اس کاوش کو شرفِ قبولیت عطا فرمائے، اسے صدقۂ جاریہ بنائے، اورحضرت والد محترم کے درجات کو بلند فرمائے۔ آمین۔
+
+تعارف و ابتدائے حالات
+
+ والد محترم، حضرت ڈاکٹر محمد اسماعیل میمن مدنی نور اللہ مرقدہٗ کی ولادت ہندوستان کے خطہ کاٹھیاواڑ کے علاقے منگرول میں ہوئی۔آپ ایک سادہ اور دینی ماحول رکھنے والے گھرانے میں پروان چڑھے، جہاں دینداری اپنی بنیادی صورت میں موجود تھی۔
+
+ابتدائی زندگی میں دینی تعلیم کا باقاعدہ نظام میسر نہ تھا، اور اس ماحول میں قرآنِ کریم کو دیکھ کر پڑھ لینا ہی دینی تعلیم کے اعتبار سے ایک بڑی بات سمجھی جاتی تھی۔ چنانچہ حضرت نے بھی اسی حد تک دینی تعلیم حاصل کی، اور کسی باقاعدہ درسِ نظامی یا عالمیت کی تعلیم سے وابستہ نہ رہے۔
+
+تاہم، یہی سادہ بنیاد، صحبت نیک کی برکت س آگے چل کر ان کے اندر دین کی طرف ایک گہرا رجحان پیدا کرنے کا سبب بنی۔ وقت کے ساتھ ساتھ انہوں نے اہلِ علم و مشائخِ کرام کی صحبت اختیار کی، ان سے رہنمائی حاصل کی، اور اپنی عملی زندگی کو دین کی خدمت کے لیے وقف کر دیا۔
 
 **Faithfulness:** Do not summarize. Do not abridge. Do not paraphrase away
 important content. Do not add new claims, stories, theological points,
 Qur'anic references, hadith citations, examples, or explanations that are not
 already present in the supplied text. You may improve expression for clarity,
 consistency, and literary quality, but you must not alter the intended
-meaning or introduce new substance.
+meaning or introduce new substance. The most you are allowed to do it match 
+the writing style of the provided sample Urdu text.
 
 **Register and Tone:** The prose should be slightly more formal than spoken
 dictation, but never stiff, theatrical, or artificially ornate. Maintain a
