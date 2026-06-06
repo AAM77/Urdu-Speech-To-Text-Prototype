@@ -283,6 +283,16 @@ def test_single_stage_target_reports_missing_prerequisite(make_env):
     assert "Missing chunk manifest" in proc.stdout
 
 
+@pytest.mark.parametrize("target", ["compose-up", "compose-test"])
+def test_local_stack_targets_fail_with_clear_placeholder(make_env, target: str):
+    proc = _run_make([target], env=make_env["env"], check=False)
+
+    assert proc.returncode != 0
+    assert target in proc.stdout
+    assert "not implemented yet" in proc.stdout
+    assert "docker compose" in proc.stdout
+
+
 def test_confirm_paid_run_flag_is_forwarded_to_paid_targets(make_env):
     proc = _run_make(
         [
