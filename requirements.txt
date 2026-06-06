@@ -1,5 +1,6 @@
-# Runtime dependencies for the Urdu Audio Article Prototype.
-# Mirrors `pyproject.toml`. For development extras, install via:
+# Full local runtime dependencies for the Urdu Audio Article Prototype.
+# Mirrors the `core` + `cli` + `ui` + `processor` extras in `pyproject.toml`.
+# For development extras, install via:
 #   pip install -e ".[dev]"
 openai>=2.30,<3
 pydantic>=2.13,<3

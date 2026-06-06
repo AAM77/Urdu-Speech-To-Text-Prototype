@@ -22,20 +22,45 @@ authors = [{ name = "Urdu Article Prototype Authors" }]
 #   https://pypi.org/project/rich/
 #   https://pypi.org/project/tiktoken/
 #   https://pypi.org/project/python-dotenv/
+# Base dependencies keep the core package importable with `pip install -e .`.
+# Wider runtime surfaces are split into extras below.
 dependencies = [
-    "openai>=2.30,<3",
     "pydantic>=2.13,<3",
     "pydantic-settings>=2.13,<3",
     "python-dotenv>=1.0,<2",
-    "streamlit>=1.55,<2",
-    "typer>=0.24,<1",
-    "rich>=14.3,<16",
     "tiktoken>=0.10,<1",
     "rapidfuzz>=3.10,<4",
 ]
 
 [project.optional-dependencies]
+core = [
+    "pydantic>=2.13,<3",
+    "pydantic-settings>=2.13,<3",
+    "python-dotenv>=1.0,<2",
+    "tiktoken>=0.10,<1",
+    "rapidfuzz>=3.10,<4",
+]
+cli = [
+    "typer>=0.24,<1",
+    "rich>=14.3,<16",
+]
+ui = [
+    "streamlit>=1.55,<2",
+]
+api = []
+processor = [
+    "openai>=2.30,<3",
+]
 dev = [
+    "pydantic>=2.13,<3",
+    "pydantic-settings>=2.13,<3",
+    "python-dotenv>=1.0,<2",
+    "tiktoken>=0.10,<1",
+    "rapidfuzz>=3.10,<4",
+    "typer>=0.24,<1",
+    "rich>=14.3,<16",
+    "streamlit>=1.55,<2",
+    "openai>=2.30,<3",
     "pytest>=9.0,<10",
     "pytest-mock>=3.14,<4",
 ]
