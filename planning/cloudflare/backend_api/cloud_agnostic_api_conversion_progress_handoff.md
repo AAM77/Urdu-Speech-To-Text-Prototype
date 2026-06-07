@@ -1,6 +1,6 @@
 # Cloud-Agnostic API Conversion Progress Handoff
 
-Last updated: 2026-06-07 (session 7)
+Last updated: 2026-06-07 (session 8)
 
 This document summarizes what has been completed from
 `cloud_agnostic_api_conversion_stepwise_commit_plan.md`, why each part exists,
@@ -58,21 +58,23 @@ Completed through:
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
 - Stage 4 (complete)
 - Stage 5 (complete)
-- Stage 6 through Step 6.1.1
+- Stage 6 through Step 6.1.2
 
 Next step in the original plan:
 
-- Stage 6: Step 6.1.2 — Finish Docker Compose Services
+- Stage 6: Step 6.2.1 — Add Local Setup Commands
 
 Most recent verification:
 
-- Combined unit + safe integration: `799 passed, 3 skipped`
+- Combined unit + safe integration: `804 passed, 3 skipped`
 - Targeted container packaging tests: `3 passed`
-- Targeted API/processor dependency/auth tests: `32 passed`
+- Targeted Compose service tests: `5 passed`
+- Targeted packaging + compose + Makefile tests: `20 passed`
+- `docker compose --env-file .env.local.example --profile proxy config`: passed
 - `git diff --check`: passed
-- Docker build smoke attempted for `Dockerfile.api`, but Docker daemon was not
-  reachable at `unix:///Users/madeel/.colima/default/docker.sock`; image builds
-  still need to be run once Colima/Docker is started.
+- Docker build/start smoke attempted, but Docker daemon was not reachable at
+  `unix:///Users/madeel/.colima/default/docker.sock`; image builds and service
+  startup still need to be run once Colima/Docker is started.
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -1116,6 +1118,94 @@ Needed for provider switch only?
 
 - No. This is local parity/backend deployment infrastructure.
 
+### Step 6.1.2: Finish Docker Compose Services
+
+What was done (strict TDD — tests written and confirmed failing before implementation):
+
+- Added `tests/unit/test_compose_services.py` before implementation.
+- The first red run failed for expected reasons:
+  - `api` had no `build` context and was still using `python:3.12-slim` with
+    `python -m http.server`.
+  - `processor` had no `build` context and was still using a Python sleep
+    placeholder.
+  - `reverse-proxy` had no mounted Nginx config.
+- Added an additional failing assertion for image-internal paths after Compose
+  rendered `/workspace/...` from `.env.local.example`; this caught a real
+  mismatch because the API/processor services no longer bind-mount the repo.
+- Updated `docker-compose.yml`:
+  - `api` now builds from `Dockerfile.api`, uses image
+    `urdu-pipeline-api:local`, runs `uvicorn
+    urdu_pipeline.api.app:create_app --factory`, exposes port `8000`, and
+    health-checks `GET /health`.
+  - `processor` now builds from `Dockerfile.processor`, uses image
+    `urdu-pipeline-processor:local`, waits for the API plus PostgreSQL, MinIO,
+    and Redis health checks, validates `urdu-pipeline process --dry-run`, writes
+    `/tmp/processor-ready`, and health-checks both readiness and `ffprobe`.
+  - Both API and processor use container-internal `/app` paths and no longer
+    bind-mount the repository.
+  - API/processor environment now includes `DATABASE_URL`, `REDIS_URL`,
+    `SERVICE_AUTH_TOKEN`, S3/MinIO endpoint URL, bucket/region, object-store
+    access keys, and AWS-compatible credential env vars for boto3.
+  - PostgreSQL, MinIO, and Redis retain persistent named volumes and health
+    checks.
+  - Optional `reverse-proxy` profile mounts a concrete Nginx config and proxies
+    to the API service.
+- Updated `.env.local.example`:
+  - Added `PROCESSOR_API_URL`, `SERVICE_AUTH_TOKEN`, object-store endpoint URL,
+    object-store credentials, and AWS-compatible MinIO credentials.
+  - Changed local container paths from `/workspace/...` to `/app/...`.
+- Added `deploy/nginx/default.conf` to proxy all requests to `http://api:8000`
+  while forwarding common proxy headers.
+
+Important limitation:
+
+- The processor service currently runs `urdu-pipeline process --dry-run`, marks
+  itself ready, and stays alive. This is explicit rather than hidden: the
+  existing CLI `process` command validates service auth but still exits because
+  the long-running command-shell loop has not yet been wired into `cli.py`.
+  The pure lifecycle and stage functions exist from Stage 5, but the CLI shell
+  still needs future integration before a real compose E2E can process jobs.
+
+Verification:
+
+- Red test run before implementation:
+  `.venv/bin/python -m pytest tests/unit/test_compose_services.py -q`
+  failed with expected compose-contract failures.
+- Targeted compose test after implementation:
+  `.venv/bin/python -m pytest tests/unit/test_compose_services.py -q`
+  passed (`5 passed`).
+- Targeted packaging + compose + Makefile tests:
+  `.venv/bin/python -m pytest tests/unit/test_container_packaging.py tests/unit/test_compose_services.py tests/integration_safe/test_makefile.py -q`
+  passed (`20 passed`).
+- Compose config validation:
+  `docker compose --env-file .env.local.example --profile proxy config`
+  passed and rendered API, processor, PostgreSQL, MinIO, Redis, and
+  reverse-proxy services.
+- Full local unit + safe integration suite:
+  `.venv/bin/python -m pytest tests/unit tests/integration_safe -q`
+  passed (`804 passed, 3 skipped`).
+- `git diff --check` passed.
+- Service startup probe:
+  `docker compose --env-file .env.local.example up --no-start`
+  could not run because the Docker daemon was not reachable at
+  `unix:///Users/madeel/.colima/default/docker.sock`.
+
+Why it was needed:
+
+- Compose now mirrors the intended service topology: separately built API and
+  processor containers plus PostgreSQL, MinIO/S3-compatible object storage, and
+  Redis/Valkey.
+- Health-gated dependencies make startup ordering explicit and closer to the
+  target deployment topology.
+- Removing repo bind mounts means the compose stack now exercises the packaged
+  images rather than the host checkout.
+- The proxy profile is concrete enough to validate locally without making it a
+  mandatory part of the default development stack.
+
+Needed for provider switch only?
+
+- No. This is local parity/backend deployment infrastructure.
+
 ## Later Completed Steps And Remaining Plan Status
 
 ### Step 4.2.4: Add CSRF, CORS, And Rate Limits
@@ -1955,7 +2045,6 @@ Make Docker Compose behave like the target backend stack.
 
 Remaining phases:
 
-- finished Docker Compose services
 - setup commands
 - workflow docs
 - compose fake-provider E2E test
@@ -2190,22 +2279,24 @@ Give the next AI these files first:
 Tell the next AI explicitly:
 
 - Current state: all local unit and safe integration tests pass
-  (`799 passed, 3 skipped`).
-- Stage 4 COMPLETE. Stage 5 COMPLETE. Stage 6 Step 6.1.1 COMPLETE.
+  (`804 passed, 3 skipped`).
+- Stage 4 COMPLETE. Stage 5 COMPLETE. Stage 6 Step 6.1.1 and 6.1.2 COMPLETE.
 - **Deployment target: AWS Lightsail** (decided 2026-06-07). Cloudflare is no
   longer the target. The architecture remains cloud-agnostic; only Stage 8
   content and Stage 9 provisioning changed in the plan. No code changes needed
   — all completed work was already cloud-agnostic.
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 6.1.2: Finish Docker Compose Services.
+- Next step is Step 6.2.1: Add Local Setup Commands.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
 - Run targeted tests before full suites.
 - Do not revert unrelated work.
 - Use `.venv/bin/python -m pytest` (not bare `pytest`) to run tests.
-- Docker build smoke for Step 6.1.1 still needs to be rerun once the local
+- Docker build/start smoke for Stage 6.1 still needs to be rerun once the local
   Docker/Colima daemon is started.
+- The processor compose service currently validates `urdu-pipeline process
+  --dry-run` and stays alive; the real long-running CLI loop is not wired yet.
 
 ## Suggested Next Decision
 
@@ -2224,14 +2315,16 @@ Track B: continue backend conversion (currently active)
   Steps 5.1.1, 5.1.2, 5.2.1–5.2.4, 5.3.1, 5.3.2 all verified.
 - **Stage 6 Step 6.1.1 is COMPLETE** (API Dockerfile, processor Dockerfile,
   `.dockerignore`, and packaging tests added).
+- **Stage 6 Step 6.1.2 is COMPLETE** (build-based compose services, health
+  checks, env wiring, optional Nginx proxy profile, and compose config tests).
 - **Deployment target changed to AWS Lightsail** (2026-06-07).
   - Stage 8 has been rewritten as "AWS Production Adapter Verification"
     (S3, RDS, Redis/SQS, Secrets Manager adapters).
   - Stage 9 provisioning updated for AWS resources.
   - Stage 8 (Cloudflare spike) is fully replaced — no work to carry forward.
   - Nothing in Stages 1–5 needs to change.
-- Next step: Step 6.1.2 — Finish Docker Compose Services.
-- Then Stage 6 setup/docs/E2E, hardening (Stage 7), AWS adapter
+- Next step: Step 6.2.1 — Add Local Setup Commands.
+- Then Stage 6 docs/E2E, hardening (Stage 7), AWS adapter
   verification (Stage 8), production deploy (Stage 9).
 
 Track C: stabilize and commit current work
