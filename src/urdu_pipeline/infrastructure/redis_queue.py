@@ -102,6 +102,10 @@ class RedisJobQueue:
     def cancel(self, job_id: JobId, *, reason: str) -> None:
         self.metadata_store.cancel_job(job_id, reason=reason)
 
+    def complete(self, lease: JobLease) -> None:
+        """Acknowledge successful processing; the job becomes terminal."""
+        self.metadata_store.complete_job(lease)
+
     def dead_letter(self, lease: JobLease, *, reason: str) -> None:
         self.metadata_store.dead_letter_job(lease, reason=reason)
 

@@ -274,6 +274,12 @@ class MetadataStore(Protocol):
 
     def get_job(self, *, user_id: UserId, job_id: JobId) -> JobRecord | None: ...
 
+    def get_job_by_id(self, job_id: JobId) -> JobRecord | None: ...
+    """Look up a job by ID without requiring the owner's user_id.
+    Used by the processor, which has elevated service-identity trust."""
+
+    def update_job(self, record: JobRecord) -> None: ...
+
     def record_artifact(self, record: ArtifactRecord) -> None: ...
 
     def get_artifact(
@@ -310,6 +316,10 @@ class JobQueue(Protocol):
         *,
         lease_seconds: int,
     ) -> JobLease: ...
+
+    def complete(self, lease: JobLease) -> None: ...
+    """Acknowledge successful processing.  Removes the lease; the job becomes
+    terminal so any duplicate re-delivery is dropped silently."""
 
     def retry(self, lease: JobLease, *, reason: str) -> None: ...
 

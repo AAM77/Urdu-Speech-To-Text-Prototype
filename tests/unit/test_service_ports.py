@@ -80,6 +80,7 @@ def test_job_queue_port_includes_required_lifecycle_methods_and_safe_payload_sha
         "enqueue",
         "claim",
         "extend_lease",
+        "complete",
         "retry",
         "mark_terminal_failure",
         "cancel",
@@ -132,6 +133,9 @@ def test_job_queue_port_includes_required_lifecycle_methods_and_safe_payload_sha
             return None
 
         def cancel(self, job_id: JobId, *, reason: str) -> None:
+            return None
+
+        def complete(self, lease: JobLease) -> None:
             return None
 
         def dead_letter(self, lease: JobLease, *, reason: str) -> None:

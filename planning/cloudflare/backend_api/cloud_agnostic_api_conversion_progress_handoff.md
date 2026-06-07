@@ -56,15 +56,15 @@ Completed through:
 - Stage 1
 - Stage 2
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
-- Stage 4 (complete) + Stage 5 through Step 5.1.1
+- Stage 4 (complete) + Stage 5 through Step 5.1.2
 
 Next step in the original plan:
 
-- Step 5.1.2: Implement Claim, Heartbeat, Lease, Retry, Cancel, Dead-Letter
+- Step 5.2.1: Materialize Workspace And Validate Audio
 
 Most recent verification:
 
-- Combined unit + safe integration: `673 passed, 3 skipped`
+- Combined unit + safe integration: `701 passed, 3 skipped`
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -1149,6 +1149,71 @@ Provider-switch relevance:
 
 - Not required for CLI provider switching.
 
+### Step 5.1.2: Implement Claim, Heartbeat, Lease, Retry, Cancel, Dead-Letter
+
+What was done:
+
+- Wrote `tests/unit/test_processor_lifecycle.py` (28 tests) before any
+  implementation, covering all lifecycle paths.
+
+- Extended `JobQueue` protocol in `services.py` with `complete(lease)` — the
+  success acknowledgement that removes the lease and makes the job terminal,
+  preventing duplicate delivery.
+
+- Extended `MetadataStore` protocol with `get_job_by_id(job_id)` (processor
+  lookup without user_id ownership check) and `update_job(record)`.
+
+- Implemented both in `InMemoryMetadataStore` and `InMemoryJobQueue`
+  (`in_memory.py`):
+  - `InMemoryJobQueue.complete`: removes lease, adds to `_completed_jobs`,
+    `_is_terminal` returns True for completed jobs.
+  - `InMemoryMetadataStore.get_job_by_id`: direct dict lookup (no user_id).
+  - `InMemoryMetadataStore.update_job`: replaces the stored record.
+
+- Updated `RedisJobQueue` in `redis_queue.py` with `complete(lease)` that
+  delegates to `metadata_store.complete_job(lease)`.
+
+- Updated `FakeAuthoritativeJobs` in `tests/unit/test_redis_job_queue.py`
+  with `complete_job` to satisfy the `JobQueue` protocol check.
+
+- Updated `FakeJobQueue` in `tests/unit/test_service_ports.py` with `complete`
+  and added `"complete"` to the `required_methods` set.
+
+- Created `src/urdu_pipeline/processor/lifecycle.py` with:
+  - `TransientJobError` — handler raises to request retry.
+  - `FatalJobError` — handler raises to abort immediately.
+  - `heartbeat(queue, lease, *, lease_seconds)` — thin `extend_lease` wrapper
+    for background-thread heartbeating.
+  - `claim_and_run(queue, metadata_store, *, worker_id, handler, ...)`:
+    - Returns `False` when queue is empty.
+    - Returns `True` for all other outcomes (success, retry, failure, cancel).
+    - Sets `JobRecord.status = RUNNING` and `RunRecord.status = RUNNING` before
+      invoking the handler.
+    - **Success**: status → SUCCEEDED; `RunRecord.status` → SUCCEEDED; lease
+      completed in queue.
+    - **TransientJobError, attempt < max**: status → QUEUED; re-enqueued.
+    - **TransientJobError, attempt >= max**: status → FAILED; `RunRecord`
+      → FAILED; dead-lettered in queue.
+    - **FatalJobError or unexpected exception**: status → FAILED; `RunRecord`
+      → FAILED; terminal failure in queue.
+    - **Pre-cancelled job**: `queue.cancel` called; handler not invoked.
+    - **Missing job record**: terminal failure in queue; handler not invoked.
+
+- Test count: 701 passed, 3 skipped.
+
+Why it was needed:
+
+- The processor needs deterministic, testable lifecycle semantics independent
+  of any queue implementation before pipeline execution is layered on top.
+- `complete()` closes the "success acknowledgement" gap in the `JobQueue` port
+  (the protocol had claim/retry/fail/dead-letter but no success path).
+- `get_job_by_id` and `update_job` give the processor full metadata access
+  without duplicating the ownership-check logic that belongs to the API layer.
+
+Provider-switch relevance:
+
+- Not required for CLI provider switching.
+
 ### Step 5.1.1: Add Processor Command And Service Auth
 
 What was done:
@@ -1701,14 +1766,14 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- Current state: all unit and safe integration tests pass (673 passed, 3 skipped).
-- Stage 4 COMPLETE. Stage 5 in progress (Step 5.1.1 done).
+- Current state: all unit and safe integration tests pass (701 passed, 3 skipped).
+- Stage 4 COMPLETE. Stage 5 in progress (Steps 5.1.1 and 5.1.2 done).
 - **Deployment target: AWS Lightsail** (decided 2026-06-07). Cloudflare is no
   longer the target. The architecture remains cloud-agnostic; only Stage 8
   content and Stage 9 provisioning changed in the plan. No code changes needed
   — all completed work was already cloud-agnostic.
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 5.1.2: Implement Claim, Heartbeat, Lease, Retry, Cancel, Dead-Letter.
+- Next step is Step 5.2.1: Materialize Workspace And Validate Audio.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
@@ -1729,16 +1794,17 @@ Track A: switch AI provider now
 
 Track B: continue backend conversion (currently active)
 
-- Stage 4 is COMPLETE. Stage 5 is underway (Step 5.1.1 done).
+- Stage 4 is COMPLETE. Stage 5 Phase 5.1 is COMPLETE (5.1.1 + 5.1.2 done).
 - **Deployment target changed to AWS Lightsail** (2026-06-07).
   - Stage 8 has been rewritten as "AWS Production Adapter Verification"
     (S3, RDS, Redis/SQS, Secrets Manager adapters).
   - Stage 9 provisioning updated for AWS resources.
   - Stage 8 (Cloudflare spike) is fully replaced — no work to carry forward.
   - Nothing in Stages 1–5.1.1 needs to change.
-- Next step: Step 5.1.2 — Implement Claim, Heartbeat, Lease, Retry, Cancel, Dead-Letter.
-- Then pipeline integration (5.2.x), local parity stack (Stage 6), hardening
-  (Stage 7), AWS adapter verification (Stage 8), production deploy (Stage 9).
+- Next step: Step 5.2.1 — Materialize Workspace And Validate Audio.
+- Then pipeline integration (5.2.2–5.2.4), failure handling (5.3.x), local
+  parity stack (Stage 6), hardening (Stage 7), AWS adapter verification
+  (Stage 8), production deploy (Stage 9).
 
 Track C: stabilize and commit current work
 

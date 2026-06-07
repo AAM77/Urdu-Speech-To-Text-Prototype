@@ -386,6 +386,15 @@ class InMemoryMetadataStore:
             return None
         return record
 
+    def get_job_by_id(self, job_id: JobId) -> JobRecord | None:
+        """Processor-only lookup without ownership enforcement."""
+        return self._jobs.get(job_id)
+
+    def update_job(self, record: JobRecord) -> None:
+        if record.job_id not in self._jobs:
+            raise KeyError(f"job not found: {record.job_id}")
+        self._jobs[record.job_id] = record
+
     def record_artifact(self, record: ArtifactRecord) -> None:
         self._require_user(record.user_id)
         self._require_run_owner(user_id=record.user_id, run_id=record.run_id)
@@ -468,6 +477,7 @@ class InMemoryJobQueue:
         self._cancelled_jobs: set[JobId] = set()
         self._terminal_failures: dict[JobId, str] = {}
         self._dead_letters: dict[JobId, str] = {}
+        self._completed_jobs: set[JobId] = set()
 
     def enqueue(self, message: QueueMessage) -> None:
         routing = _validate_routing(message.routing)
@@ -519,6 +529,12 @@ class InMemoryJobQueue:
         self._leases[lease.lease_id] = extended
         return extended
 
+    def complete(self, lease: JobLease) -> None:
+        """Acknowledge success.  Removes the lease and marks the job terminal."""
+        active = self._require_lease(lease)
+        del self._leases[active.lease_id]
+        self._completed_jobs.add(active.job_id)
+
     def retry(self, lease: JobLease, *, reason: str) -> None:
         active = self._require_lease(lease)
         del self._leases[active.lease_id]
@@ -555,6 +571,7 @@ class InMemoryJobQueue:
             job_id in self._cancelled_jobs
             or job_id in self._terminal_failures
             or job_id in self._dead_letters
+            or job_id in self._completed_jobs
         )
 
 

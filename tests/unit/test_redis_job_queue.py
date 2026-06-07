@@ -105,6 +105,11 @@ class FakeAuthoritativeJobs:
         self.states[job_id] = "cancelled"
         return True
 
+    def complete_job(self, lease: JobLease) -> None:
+        self._require_lease(lease)
+        self.leases.pop(lease.lease_id)
+        self.states[lease.job_id] = "completed"
+
     def dead_letter_job(self, lease: JobLease, *, reason: str) -> None:
         del reason
         self._require_lease(lease)
