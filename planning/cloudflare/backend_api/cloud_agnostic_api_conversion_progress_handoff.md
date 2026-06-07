@@ -56,15 +56,15 @@ Completed through:
 - Stage 1
 - Stage 2
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
-- Stage 4 (complete) + Stage 5 through Step 5.2.3
+- Stage 4 (complete) + Stage 5 through Step 5.2.4
 
 Next step in the original plan:
 
-- Step 5.2.4: Run Translation And Article Generation
+- Step 5.3.1: Add Idempotent Retry Behavior
 
 Most recent verification:
 
-- Combined unit + safe integration: `753 passed, 3 skipped`
+- Combined unit + safe integration: `765 passed, 3 skipped`
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -1149,6 +1149,73 @@ Provider-switch relevance:
 
 - Not required for CLI provider switching.
 
+### Step 5.2.4: Run Translation And Article Generation
+
+What was done:
+
+- Wrote `tests/unit/test_processor_pipeline.py` (12 tests) before any
+  implementation, covering all paths under TDD. Tests confirmed failing first.
+
+- Created `src/urdu_pipeline/processor/pipeline.py` with:
+  - `run_translation_and_article(job_record, reconciled_artifact, *,
+    artifact_repo, usage_ledger, budget_service, translator_fn, article_fn)
+    -> tuple[ArtifactReference, ArtifactReference]`
+    - `_enforce_budget(job_record, budget_service, stage)` — calls
+      `budget_service.check_run_budget(next_cost_usd=0.0)` (current total only)
+      before each stage; raises `FatalJobError` with a descriptive message if
+      `decision.blocked`.
+    - Calls `translator_fn(reconciled_artifact)` →
+      `(EnglishTranslationArtifact, usage_dict)`.
+    - Records translation usage via `_record_stage_usage` → `usage_ledger`.
+    - Persists translation artifact (`stage=TRANSLATOR`,
+      `artifact_type=ENGLISH_TRANSLATION`).
+    - Calls `_enforce_budget` again — now includes translation cost, so if
+      translation was expensive the article stage is blocked first.
+    - Calls `article_fn(translation_artifact)` →
+      `(ArticleArtifact, usage_dict)`.
+    - Records article usage via `_record_stage_usage` → `usage_ledger`.
+    - Persists article artifact (`stage=ARTICLE_GENERATOR`,
+      `artifact_type=FINAL_ARTICLE`).
+    - Returns `(translation_ref, article_ref)`.
+  - Both `translator_fn` and `article_fn` return `(artifact, usage_dict)`
+    where `usage_dict` contains `model_id`, `cost_usd`, and `actual_usage`.
+
+- Tests cover:
+  - Returns two `ArtifactReference` instances.
+  - Translation ref has `stage=TRANSLATOR`, `artifact_type=ENGLISH_TRANSLATION`.
+  - Article ref has `stage=ARTICLE_GENERATOR`, `artifact_type=FINAL_ARTICLE`.
+  - Exactly 2 artifacts saved to repo.
+  - Translation payload contains `full_text_english`.
+  - Article payload contains `article.title`.
+  - Artifact `user_id`/`run_id` match the job.
+  - 2 usage records persisted (one per stage).
+  - Usage records have correct `user_id`/`run_id`/`job_id`.
+  - Budget exceeded before translation → `FatalJobError`, `translator_fn` never
+    called (verified via call_log).
+  - Translation runs (budget OK), costly translation records exceed cap → article
+    stage blocked before `article_fn` is called.
+  - Prompt safety: Urdu source text does not appear as a key in the translation
+    artifact payload.
+
+- Test count: 765 passed, 3 skipped.
+
+Why it was needed:
+
+- Translation and article generation are the most expensive stages. Checking
+  budget with the current ledger total before each stage ensures cost overruns
+  stop processing immediately without wasting more provider calls.
+- The shared `usage_ledger`/`budget_service` linkage enables the mid-run
+  blocking test: translation records $0.12, the next budget check reads $0.12 >
+  $0.10 cap, article is blocked.
+- Injectable `translator_fn`/`article_fn` follow the same pattern as the other
+  processor modules, making provider switching (Step 5.3+) a closure swap.
+
+Provider-switch relevance:
+
+- `translator_fn` and `article_fn` are the exact injection points for
+  alternative providers (Gemini, Llama, etc.) — the budget enforcement and
+  artifact persistence logic stays unchanged.
+
 ### Step 5.2.3: Run Transcription And Reconciliation
 
 What was done:
@@ -1954,14 +2021,15 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- Current state: all unit and safe integration tests pass (753 passed, 3 skipped).
-- Stage 4 COMPLETE. Stage 5 in progress (Steps 5.1.1, 5.1.2, 5.2.1, 5.2.2, and 5.2.3 done).
+- Current state: all unit and safe integration tests pass (765 passed, 3 skipped).
+- Stage 4 COMPLETE. Stage 5 Phase 5.2 is now COMPLETE (5.2.1–5.2.4 done).
+  Stage 5 in progress (Steps 5.1.1, 5.1.2, 5.2.1, 5.2.2, 5.2.3, and 5.2.4 done).
 - **Deployment target: AWS Lightsail** (decided 2026-06-07). Cloudflare is no
   longer the target. The architecture remains cloud-agnostic; only Stage 8
   content and Stage 9 provisioning changed in the plan. No code changes needed
   — all completed work was already cloud-agnostic.
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 5.2.4: Run Translation And Article Generation.
+- Next step is Step 5.3.1: Add Idempotent Retry Behavior.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
@@ -1983,14 +2051,14 @@ Track A: switch AI provider now
 Track B: continue backend conversion (currently active)
 
 - Stage 4 is COMPLETE. Stage 5 Phase 5.1 is COMPLETE (5.1.1 + 5.1.2 done).
-  Steps 5.2.1, 5.2.2, and 5.2.3 are also COMPLETE.
+  Phase 5.2 is COMPLETE (Steps 5.2.1–5.2.4 all done).
 - **Deployment target changed to AWS Lightsail** (2026-06-07).
   - Stage 8 has been rewritten as "AWS Production Adapter Verification"
     (S3, RDS, Redis/SQS, Secrets Manager adapters).
   - Stage 9 provisioning updated for AWS resources.
   - Stage 8 (Cloudflare spike) is fully replaced — no work to carry forward.
-  - Nothing in Stages 1–5.2.3 needs to change.
-- Next step: Step 5.2.4 — Run Translation And Article Generation.
+  - Nothing in Stages 1–5.2.4 needs to change.
+- Next step: Step 5.3.1 — Add Idempotent Retry Behavior.
 - Then pipeline integration (5.2.2–5.2.4), failure handling (5.3.x), local
   parity stack (Stage 6), hardening (Stage 7), AWS adapter verification
   (Stage 8), production deploy (Stage 9).
