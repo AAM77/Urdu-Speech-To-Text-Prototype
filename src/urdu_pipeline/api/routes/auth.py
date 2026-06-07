@@ -19,9 +19,11 @@ from typing import Annotated
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
 
 from urdu_pipeline.api.dependencies import (
+    check_login_rate_limit,
     get_metadata_store,
     get_password_hasher,
 )
+from urdu_pipeline.api.middleware.csrf import generate_csrf_token
 from urdu_pipeline.api.schemas import LoginRequest, SessionResponse
 from urdu_pipeline.application.ports import MetadataStore
 from urdu_pipeline.auth.hashing import PasswordHasher
@@ -35,17 +37,28 @@ from urdu_pipeline.domain import UserStatus
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 _SESSION_COOKIE = "session"
+_CSRF_COOKIE = "csrf_token"
 _SESSION_MAX_AGE = 7 * 24 * 3600  # 7 days in seconds
 
 
-@router.post("/login", response_model=SessionResponse, status_code=status.HTTP_200_OK)
+@router.post(
+    "/login",
+    response_model=SessionResponse,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(check_login_rate_limit)],
+)
 def login(
     body: LoginRequest,
     response: Response,
     metadata_store: Annotated[MetadataStore, Depends(get_metadata_store)],
     password_hasher: Annotated[PasswordHasher, Depends(get_password_hasher)],
 ) -> SessionResponse:
-    """Authenticate with username and password, create a session, set cookie."""
+    """Authenticate with username and password, create a session, set cookies.
+
+    Sets two cookies:
+    - ``session``: HTTP-only session token.
+    - ``csrf_token``: Non-HTTP-only CSRF nonce (client JS reads and sends as header).
+    """
     user = metadata_store.get_user_by_username(body.username)
     if (
         user is None
@@ -59,12 +72,21 @@ def login(
         )
 
     raw_token, _ = create_session(metadata_store, user_id=user.user_id)
+    csrf_token = generate_csrf_token()
 
     response.set_cookie(
         key=_SESSION_COOKIE,
         value=raw_token,
         httponly=True,
         samesite="lax",
+        secure=False,
+        max_age=_SESSION_MAX_AGE,
+    )
+    response.set_cookie(
+        key=_CSRF_COOKIE,
+        value=csrf_token,
+        httponly=False,  # JS must be able to read this to set the header
+        samesite="strict",
         secure=False,
         max_age=_SESSION_MAX_AGE,
     )

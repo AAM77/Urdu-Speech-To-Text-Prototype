@@ -1,6 +1,6 @@
 # Cloud-Agnostic API Conversion Progress Handoff
 
-Last updated: 2026-06-07 (session 4)
+Last updated: 2026-06-07 (session 5)
 
 This document summarizes what has been completed from
 `cloud_agnostic_api_conversion_stepwise_commit_plan.md`, why each part exists,
@@ -56,15 +56,15 @@ Completed through:
 - Stage 1
 - Stage 2
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
-- Stage 4 through Step 4.2.3
+- Stage 4 through Step 4.2.4
 
 Next step in the original plan:
 
-- Step 4.2.4: Add CSRF, CORS, And Rate Limits
+- Step 4.3.1: Add Upload Init And Complete Routes
 
 Most recent verification:
 
-- Combined unit + safe integration: `446 passed, 3 skipped`
+- Combined unit + safe integration: `468 passed, 3 skipped`
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -1041,13 +1041,64 @@ Provider-switch relevance:
 
 ## What Is Left In The Original Plan
 
+### Step 4.2.4: Add CSRF, CORS, And Rate Limits
+
+What was done (strict TDD — tests written and confirmed failing before implementation):
+
+- Created `src/urdu_pipeline/api/middleware/__init__.py` (package marker).
+- Created `src/urdu_pipeline/api/middleware/csrf.py`:
+  - `generate_csrf_token()` — generates a `secrets.token_hex(16)` CSRF nonce.
+  - `require_csrf` FastAPI dependency — double-submit cookie pattern:
+    - Reads `session` cookie, `csrf_token` cookie, and `X-CSRF-Token` header.
+    - If no session cookie: skips CSRF check (auth dependency raises 401 instead).
+    - If session present but no/wrong CSRF header: raises HTTP 403.
+    - Uses `secrets.compare_digest` to prevent timing attacks.
+- Created `src/urdu_pipeline/api/middleware/rate_limit.py`:
+  - `RateLimiter` Protocol — `check_and_increment(key: str) -> bool`.
+  - `InMemoryRateLimiter` — fixed-window counter using `time.monotonic()`.
+    Configurable `limit` and `window_seconds`. Thread-safety note documented.
+- Updated `AppState` in `api/dependencies.py`:
+  - Added `login_rate_limiter: RateLimiter = InMemoryRateLimiter(limit=10, window_seconds=60)`.
+  - Added `get_login_rate_limiter` dependency.
+  - Added `check_login_rate_limit` dependency — keys on `login:{client_ip}`, raises 429.
+- Updated `api/routes/auth.py`:
+  - `POST /auth/login` now has `check_login_rate_limit` as a route dependency.
+  - Login response sets a second cookie: `csrf_token` (NOT httponly, samesite=strict).
+    Client JS reads this and includes it as `X-CSRF-Token` on mutating requests.
+- Updated `api/routes/tokens.py`:
+  - `POST /tokens` and `DELETE /tokens/{id}` now have `require_csrf` as a route dependency.
+  - `GET /tokens` is idempotent — no CSRF required.
+- Updated `api/app.py` (`create_app`):
+  - Added `allowed_origins: list[str] | None` parameter.
+  - Adds `CORSMiddleware` when `allowed_origins` is non-empty.
+  - `["*"]` allows all origins; `[]` (default) disables cross-origin headers.
+- Updated `tests/unit/test_token_routes.py`:
+  - `_logged_in_client()` now returns `(client, store, csrf_token)` (3-tuple).
+  - All mutating calls in the test file updated to include `headers={"X-CSRF-Token": csrf}`.
+- Wrote `tests/unit/test_security_middleware.py` (22 tests) BEFORE implementation:
+  - CSRF: login sets a non-httponly `csrf_token` cookie; POST/DELETE without the
+    header get 403; with matching header they succeed; wrong value gets 403.
+  - CSRF ordering: unauthenticated POST → 401 (auth fires), not 403 (CSRF fires).
+  - CORS: allowed origin gets `Access-Control-Allow-Origin`; disallowed does not;
+    OPTIONS preflight succeeds; empty allowlist = no CORS headers; `*` allows all.
+  - Rate limiting: requests within limit succeed; requests over limit get 429;
+    boundary request still allowed; health endpoint unaffected by login limiter.
+- Test count: 468 passed, 3 skipped.
+
+Why it was needed:
+
+- CSRF: session cookies are sent by browsers automatically — without CSRF protection
+  a malicious page could trigger state mutations on behalf of a logged-in user.
+- Double-submit pattern is stateless (no server-side CSRF token store needed).
+- Bearer token requests are inherently CSRF-safe (browsers never auto-attach them).
+- CORS allowlist prevents other web origins from reading API responses.
+- Login rate limiting mitigates brute-force password attacks.
+
+Provider-switch relevance:
+
+- Not required for CLI provider switching.
+
 ## Remaining Stage 4 Work
-
-### Step 4.2.x: Auth, Sessions, Tokens, CSRF, CORS, Rate Limits (NEXT)
-
-Remaining phases:
-
-- CSRF, CORS, rate limits (Step 4.2.4)
 
 Why needed:
 
@@ -1345,9 +1396,11 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- Current state: all unit and safe integration tests pass (446 passed, 3 skipped).
+- Current state: all unit and safe integration tests pass (468 passed, 3 skipped).
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 4.2.4: Add CSRF, CORS, And Rate Limits.
+- Next step is Step 4.3.1: Add Upload Init And Complete Routes.
+- IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
+  confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
 - Run targeted tests before full suites.
 - Do not revert unrelated work.
@@ -1366,8 +1419,9 @@ Track A: switch AI provider now
 
 Track B: continue backend conversion (currently active)
 
-- Next step: Step 4.2.4 — Add CSRF, CORS, And Rate Limits.
-- Then resource routes (Step 4.3.x).
+- Next step: Step 4.3.1 — Add Upload Init And Complete Routes.
+- Then multipart/direct upload (4.3.2), run routes (4.3.3), artifact/event routes (4.3.4), OpenAPI review (4.3.5).
+- Then processor (Stage 5) and local parity stack (Stage 6).
 - Then resource routes (Step 4.3.x).
 - Then processor (Stage 5) and local parity stack (Stage 6).
 

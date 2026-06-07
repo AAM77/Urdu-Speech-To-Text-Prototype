@@ -29,6 +29,7 @@ from urdu_pipeline.api.dependencies import (
     require_principal,
     require_session_principal,
 )
+from urdu_pipeline.api.middleware.csrf import require_csrf
 from urdu_pipeline.api.schemas import (
     CreateTokenRequest,
     CreateTokenResponse,
@@ -47,7 +48,12 @@ from urdu_pipeline.domain.ids import TokenId
 router = APIRouter(prefix="/tokens", tags=["tokens"])
 
 
-@router.post("", response_model=CreateTokenResponse, status_code=status.HTTP_200_OK)
+@router.post(
+    "",
+    response_model=CreateTokenResponse,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_csrf)],
+)
 def create_token(
     body: CreateTokenRequest,
     principal: Annotated[AuthPrincipal, Depends(require_session_principal)],
@@ -106,6 +112,7 @@ def list_tokens(
     "/{token_id}",
     response_model=RevokeTokenResponse,
     status_code=status.HTTP_200_OK,
+    dependencies=[Depends(require_csrf)],
 )
 def revoke_token(
     token_id: str,

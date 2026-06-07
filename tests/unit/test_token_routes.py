@@ -3,6 +3,10 @@
 Written BEFORE implementation (TDD).  Tests must fail until routes and
 dependencies are wired up.
 
+Updated in Step 4.2.4 to supply ``X-CSRF-Token`` headers on every
+session-authed mutating request (POST/DELETE), as CSRF protection is now
+enforced on those routes.
+
 Tests cover:
   - POST /tokens: create token, raw token returned once in response.
   - GET /tokens: list tokens, raw token NEVER appears in list.
@@ -13,6 +17,8 @@ Tests cover:
 """
 
 from __future__ import annotations
+
+from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -66,11 +72,16 @@ def _make_app() -> tuple[TestClient, InMemoryMetadataStore]:
     return client, store
 
 
-def _logged_in_client() -> tuple[TestClient, InMemoryMetadataStore]:
-    """Client that has already logged in (session cookie set)."""
+def _logged_in_client() -> tuple[TestClient, InMemoryMetadataStore, str]:
+    """Return (client, store, csrf_token) after a successful login.
+
+    The returned ``csrf_token`` must be sent as the ``X-CSRF-Token`` header
+    on all mutating requests (POST, DELETE) that use the session cookie.
+    """
     client, store = _make_app()
-    client.post("/auth/login", json={"username": "alice", "password": "s3cret"})
-    return client, store
+    resp = client.post("/auth/login", json={"username": "alice", "password": "s3cret"})
+    csrf_token = resp.cookies.get("csrf_token", "")
+    return client, store, csrf_token
 
 
 # ── TestCreateToken ───────────────────────────────────────────────────────────
@@ -85,74 +96,80 @@ class TestCreateToken:
         assert response.status_code == 401
 
     def test_create_token_returns_200(self):
-        client, _ = _logged_in_client()
+        client, _, csrf = _logged_in_client()
 
-        response = client.post("/tokens", json={"name": "ci"})
+        response = client.post("/tokens", json={"name": "ci"}, headers={"X-CSRF-Token": csrf})
 
         assert response.status_code == 200
 
     def test_response_contains_raw_token(self):
         """Token is shown once — must appear in create response."""
-        client, _ = _logged_in_client()
+        client, _, csrf = _logged_in_client()
 
-        response = client.post("/tokens", json={"name": "ci"})
+        response = client.post("/tokens", json={"name": "ci"}, headers={"X-CSRF-Token": csrf})
         body = response.json()
 
         assert "token" in body
         assert len(body["token"]) == 64  # secrets.token_hex(32)
 
     def test_response_contains_token_id(self):
-        client, _ = _logged_in_client()
+        client, _, csrf = _logged_in_client()
 
-        response = client.post("/tokens", json={"name": "ci"})
+        response = client.post("/tokens", json={"name": "ci"}, headers={"X-CSRF-Token": csrf})
         body = response.json()
 
         assert "token_id" in body
         assert body["token_id"].startswith("tok_")
 
     def test_response_contains_name(self):
-        client, _ = _logged_in_client()
+        client, _, csrf = _logged_in_client()
 
-        response = client.post("/tokens", json={"name": "my-ci-key"})
+        response = client.post(
+            "/tokens", json={"name": "my-ci-key"}, headers={"X-CSRF-Token": csrf}
+        )
 
         assert response.json()["name"] == "my-ci-key"
 
     def test_response_does_not_expose_user_id(self):
-        client, _ = _logged_in_client()
+        client, _, csrf = _logged_in_client()
 
-        response = client.post("/tokens", json={"name": "ci"})
+        response = client.post("/tokens", json={"name": "ci"}, headers={"X-CSRF-Token": csrf})
 
         assert "user_id" not in response.json()
 
     def test_response_does_not_expose_token_hash(self):
         """Hash must never leave the server."""
-        client, _ = _logged_in_client()
+        client, _, csrf = _logged_in_client()
 
-        response = client.post("/tokens", json={"name": "ci"})
+        response = client.post("/tokens", json={"name": "ci"}, headers={"X-CSRF-Token": csrf})
 
         assert "token_hash" not in response.json()
 
     def test_create_token_with_expiry(self):
-        client, _ = _logged_in_client()
+        client, _, csrf = _logged_in_client()
 
-        response = client.post("/tokens", json={"name": "ci", "expires_in_days": 90})
+        response = client.post(
+            "/tokens", json={"name": "ci", "expires_in_days": 90}, headers={"X-CSRF-Token": csrf}
+        )
         body = response.json()
 
         assert body.get("expires_at") is not None
 
     def test_create_token_without_expiry_has_no_expires_at(self):
-        client, _ = _logged_in_client()
+        client, _, csrf = _logged_in_client()
 
-        response = client.post("/tokens", json={"name": "ci"})
+        response = client.post("/tokens", json={"name": "ci"}, headers={"X-CSRF-Token": csrf})
         body = response.json()
 
         assert body.get("expires_at") is None
 
     def test_unknown_field_in_request_returns_422(self):
-        client, _ = _logged_in_client()
+        client, _, csrf = _logged_in_client()
 
         response = client.post(
-            "/tokens", json={"name": "ci", "injected_field": "evil"}
+            "/tokens",
+            json={"name": "ci", "injected_field": "evil"},
+            headers={"X-CSRF-Token": csrf},
         )
 
         assert response.status_code == 422
@@ -170,16 +187,16 @@ class TestListTokens:
         assert response.status_code == 401
 
     def test_list_tokens_returns_200(self):
-        client, _ = _logged_in_client()
+        client, _, _ = _logged_in_client()
 
         response = client.get("/tokens")
 
         assert response.status_code == 200
 
     def test_list_tokens_shows_created_tokens(self):
-        client, _ = _logged_in_client()
-        client.post("/tokens", json={"name": "ci"})
-        client.post("/tokens", json={"name": "deploy"})
+        client, _, csrf = _logged_in_client()
+        client.post("/tokens", json={"name": "ci"}, headers={"X-CSRF-Token": csrf})
+        client.post("/tokens", json={"name": "deploy"}, headers={"X-CSRF-Token": csrf})
 
         response = client.get("/tokens")
         body = response.json()
@@ -188,8 +205,8 @@ class TestListTokens:
 
     def test_list_tokens_never_includes_raw_token(self):
         """Shown once — raw token must NOT appear in list responses."""
-        client, _ = _logged_in_client()
-        create_resp = client.post("/tokens", json={"name": "ci"})
+        client, _, csrf = _logged_in_client()
+        create_resp = client.post("/tokens", json={"name": "ci"}, headers={"X-CSRF-Token": csrf})
         raw_token = create_resp.json()["token"]
 
         list_resp = client.get("/tokens")
@@ -198,16 +215,16 @@ class TestListTokens:
         assert raw_token not in list_body
 
     def test_list_tokens_never_includes_hash(self):
-        client, _ = _logged_in_client()
-        client.post("/tokens", json={"name": "ci"})
+        client, _, csrf = _logged_in_client()
+        client.post("/tokens", json={"name": "ci"}, headers={"X-CSRF-Token": csrf})
 
         response = client.get("/tokens")
 
         assert "token_hash" not in str(response.json())
 
     def test_list_tokens_includes_token_id_and_name(self):
-        client, _ = _logged_in_client()
-        client.post("/tokens", json={"name": "ci"})
+        client, _, csrf = _logged_in_client()
+        client.post("/tokens", json={"name": "ci"}, headers={"X-CSRF-Token": csrf})
 
         response = client.get("/tokens")
         token_summary = response.json()["tokens"][0]
@@ -216,8 +233,8 @@ class TestListTokens:
         assert "name" in token_summary
 
     def test_list_tokens_includes_last_used_at_field(self):
-        client, _ = _logged_in_client()
-        client.post("/tokens", json={"name": "ci"})
+        client, _, csrf = _logged_in_client()
+        client.post("/tokens", json={"name": "ci"}, headers={"X-CSRF-Token": csrf})
 
         response = client.get("/tokens")
         token_summary = response.json()["tokens"][0]
@@ -237,40 +254,46 @@ class TestRevokeToken:
         assert response.status_code == 401
 
     def test_revoke_token_returns_200(self):
-        client, _ = _logged_in_client()
-        create_resp = client.post("/tokens", json={"name": "ci"})
+        client, _, csrf = _logged_in_client()
+        create_resp = client.post(
+            "/tokens", json={"name": "ci"}, headers={"X-CSRF-Token": csrf}
+        )
         token_id = create_resp.json()["token_id"]
 
-        response = client.delete(f"/tokens/{token_id}")
+        response = client.delete(f"/tokens/{token_id}", headers={"X-CSRF-Token": csrf})
 
         assert response.status_code == 200
 
     def test_revoke_token_response_contains_token_id(self):
-        client, _ = _logged_in_client()
-        create_resp = client.post("/tokens", json={"name": "ci"})
+        client, _, csrf = _logged_in_client()
+        create_resp = client.post(
+            "/tokens", json={"name": "ci"}, headers={"X-CSRF-Token": csrf}
+        )
         token_id = create_resp.json()["token_id"]
 
-        response = client.delete(f"/tokens/{token_id}")
+        response = client.delete(f"/tokens/{token_id}", headers={"X-CSRF-Token": csrf})
 
         assert response.json()["token_id"] == token_id
 
     def test_revoke_nonexistent_token_returns_404(self):
-        client, _ = _logged_in_client()
+        client, _, csrf = _logged_in_client()
 
-        response = client.delete("/tokens/tok_" + "a" * 32)
+        response = client.delete("/tokens/tok_" + "a" * 32, headers={"X-CSRF-Token": csrf})
 
         assert response.status_code == 404
 
     def test_revoked_token_no_longer_valid_for_bearer_auth(self):
         """After revocation, bearer auth with that token returns 401."""
-        client, _ = _logged_in_client()
-        create_resp = client.post("/tokens", json={"name": "ci"})
+        client, _, csrf = _logged_in_client()
+        create_resp = client.post(
+            "/tokens", json={"name": "ci"}, headers={"X-CSRF-Token": csrf}
+        )
         body = create_resp.json()
         token_id = body["token_id"]
         raw_token = body["token"]
 
         # revoke
-        client.delete(f"/tokens/{token_id}")
+        client.delete(f"/tokens/{token_id}", headers={"X-CSRF-Token": csrf})
 
         # try to use the revoked token for bearer auth
         unauth_client, _ = _make_app()
@@ -286,8 +309,6 @@ class TestRevokeToken:
 class TestBearerTokenAuth:
     def test_valid_bearer_token_authenticates_request(self):
         """A raw token from create can be used as Bearer auth on token list."""
-        # Share the same app instance so the token created by client1 is
-        # visible when client2 authenticates with the bearer header.
         store = InMemoryMetadataStore()
         hasher = _FakeHasher()
         user = UserRecord(
@@ -308,8 +329,13 @@ class TestBearerTokenAuth:
 
         # Client 1: log in with session cookie and create a bearer token
         client1 = TestClient(app, raise_server_exceptions=True)
-        client1.post("/auth/login", json={"username": "alice", "password": "s3cret"})
-        create_resp = client1.post("/tokens", json={"name": "ci"})
+        login_resp = client1.post(
+            "/auth/login", json={"username": "alice", "password": "s3cret"}
+        )
+        csrf = login_resp.cookies.get("csrf_token", "")
+        create_resp = client1.post(
+            "/tokens", json={"name": "ci"}, headers={"X-CSRF-Token": csrf}
+        )
         raw_token = create_resp.json()["token"]
 
         # Client 2: no session cookie, authenticates via bearer header only
@@ -330,15 +356,13 @@ class TestBearerTokenAuth:
         assert response.status_code == 401
 
     def test_bearer_auth_updates_last_used_at_in_store(self):
-        client, store = _logged_in_client()
-        create_resp = client.post("/tokens", json={"name": "ci"})
+        client, _, csrf = _logged_in_client()
+        create_resp = client.post(
+            "/tokens", json={"name": "ci"}, headers={"X-CSRF-Token": csrf}
+        )
         raw_token = create_resp.json()["token"]
 
-        # make a request with the bearer token
-        client2, store2 = _make_app()
-        # Note: client2 uses a separate store instance; we need the original store
-        # So we test last_used_at via the list endpoint on the same client
-        client.logout = None  # no logout needed
+        # Make a GET request authenticated via bearer (session cookie also sent, that's OK)
         client.get("/tokens", headers={"Authorization": f"Bearer {raw_token}"})
 
         # Check last_used_at via list
@@ -349,10 +373,8 @@ class TestBearerTokenAuth:
     def test_expired_bearer_token_returns_401(self):
         """An expired token (created with negative expiry) returns 401."""
         from urdu_pipeline.auth.bearer import create_bearer_token
-        from datetime import timedelta
 
-        _, store = _logged_in_client()
-        # Directly create an expired token in the store
+        _, store, _ = _logged_in_client()
         user = store.get_user_by_username("alice")
         raw_token, _ = create_bearer_token(
             store,

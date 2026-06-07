@@ -17,6 +17,7 @@ from urdu_pipeline.application.ports.services import AuthPrincipal
 from urdu_pipeline.auth.bearer import resolve_bearer_token
 from urdu_pipeline.auth.hashing import BcryptHasher, PasswordHasher
 from urdu_pipeline.auth.sessions import resolve_session
+from urdu_pipeline.api.middleware.rate_limit import InMemoryRateLimiter, RateLimiter
 
 
 @dataclass
@@ -29,6 +30,9 @@ class AppState:
     ``password_hasher`` defaults to ``BcryptHasher()`` so production callers
     only need to supply the stores/providers.  Tests can override it with a
     deterministic fake to avoid bcrypt's intentional cost.
+
+    ``login_rate_limiter`` defaults to 10 requests per 60 seconds.  Tests can
+    inject an ``InMemoryRateLimiter`` with a low limit to verify 429 behavior.
     """
 
     metadata_store: MetadataStore
@@ -36,6 +40,9 @@ class AppState:
     cache_store: CacheStore
     secret_provider: SecretProvider
     password_hasher: PasswordHasher = field(default_factory=BcryptHasher)
+    login_rate_limiter: RateLimiter = field(
+        default_factory=lambda: InMemoryRateLimiter(limit=10, window_seconds=60)
+    )
 
 
 def get_app_state(request: Request) -> AppState:
@@ -71,6 +78,25 @@ def get_password_hasher(
     state: Annotated[AppState, Depends(get_app_state)],
 ) -> PasswordHasher:
     return state.password_hasher
+
+
+def get_login_rate_limiter(
+    state: Annotated[AppState, Depends(get_app_state)],
+) -> RateLimiter:
+    return state.login_rate_limiter
+
+
+def check_login_rate_limit(
+    request: Request,
+    limiter: Annotated[RateLimiter, Depends(get_login_rate_limiter)],
+) -> None:
+    """FastAPI dependency: enforce per-IP rate limit on login."""
+    client_ip = request.client.host if request.client else "unknown"
+    if not limiter.check_and_increment(f"login:{client_ip}"):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts. Please try again later.",
+        )
 
 
 _SESSION_COOKIE = "session"
@@ -132,8 +158,10 @@ def require_session_principal(
 
 __all__ = [
     "AppState",
+    "check_login_rate_limit",
     "get_app_state",
     "get_cache_store",
+    "get_login_rate_limiter",
     "get_metadata_store",
     "get_object_store",
     "get_password_hasher",
