@@ -283,14 +283,64 @@ def test_single_stage_target_reports_missing_prerequisite(make_env):
     assert "Missing chunk manifest" in proc.stdout
 
 
-@pytest.mark.parametrize("target", ["compose-up", "compose-test"])
-def test_local_stack_targets_fail_with_clear_placeholder(make_env, target: str):
-    proc = _run_make([target], env=make_env["env"], check=False)
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("api-dev", ["uvicorn", "urdu_pipeline.api.app:create_app", "--factory"]),
+        ("processor-dev", ["urdu_pipeline.cli", "process", "--api-url"]),
+        ("compose-up", ["docker compose", "--env-file .env.local.example", "up --build -d"]),
+        ("compose-down", ["docker compose", "--env-file .env.local.example", "down"]),
+        ("compose-test", ["docker compose", "config", "up --build -d", "ps"]),
+    ],
+)
+def test_local_stack_runtime_targets_are_wired_for_dry_run(
+    make_env,
+    target: str,
+    expected: list[str],
+):
+    proc = _run_make(["-n", target], env=make_env["env"])
 
-    assert proc.returncode != 0
-    assert target in proc.stdout
-    assert "not implemented yet" in proc.stdout
-    assert "docker compose" in proc.stdout
+    assert "not implemented yet" not in proc.stdout
+    for snippet in expected:
+        assert snippet in proc.stdout
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("compose-migrate", ["urdu_pipeline.cli", "migrate-db"]),
+        ("compose-seed-user", ["urdu_pipeline.cli", "admin-create-user", "--username", "--password"]),
+        ("compose-seed-service-identity", ["urdu_pipeline.cli", "seed-service-identity", "--name"]),
+        ("compose-seed-provider-config", ["urdu_pipeline.cli", "seed-provider-config", "--provider-name"]),
+        ("compose-seed-bucket", ["urdu_pipeline.cli", "seed-bucket", "--bucket", "--endpoint-url"]),
+    ],
+)
+def test_local_stack_setup_targets_are_wired_for_dry_run(
+    make_env,
+    target: str,
+    expected: list[str],
+):
+    proc = _run_make(["-n", target], env=make_env["env"])
+
+    assert "urdu_pipeline.cli" in proc.stdout
+    for snippet in expected:
+        assert snippet in proc.stdout
+
+
+def test_compose_setup_runs_all_setup_steps_in_order(make_env):
+    proc = _run_make(["-n", "compose-setup"], env=make_env["env"])
+
+    stdout = proc.stdout
+    expected_order = [
+        "compose-up",
+        "compose-migrate",
+        "compose-seed-bucket",
+        "compose-seed-user",
+        "compose-seed-service-identity",
+        "compose-seed-provider-config",
+    ]
+    positions = [stdout.index(step) for step in expected_order]
+    assert positions == sorted(positions)
 
 
 def test_confirm_paid_run_flag_is_forwarded_to_paid_targets(make_env):

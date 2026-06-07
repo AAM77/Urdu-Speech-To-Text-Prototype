@@ -5,6 +5,10 @@ SHELL := /bin/bash
 PYTHON ?= .venv/bin/python
 PYTHONPATH ?= src
 CLI = PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m urdu_pipeline.cli
+UVICORN = PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m uvicorn
+COMPOSE ?= docker compose
+COMPOSE_ENV_FILE ?= .env.local.example
+COMPOSE_CMD = $(COMPOSE) --env-file $(COMPOSE_ENV_FILE)
 
 AUDIO ?=
 RUN_DIR ?=
@@ -14,6 +18,20 @@ CONFIRM_PAID_RUN ?= 0
 CHUNK_LENGTH_SECONDS ?=
 OVERLAP_SECONDS ?=
 DATABASE_URL ?= postgresql://urdu_pipeline:urdu_pipeline_local_password@localhost:5432/urdu_pipeline
+LOCAL_DATABASE_URL ?= $(DATABASE_URL)
+API_HOST ?= 0.0.0.0
+API_PORT ?= 8000
+PROCESSOR_API_URL ?= http://localhost:8000
+SERVICE_AUTH_TOKEN ?= local_processor_dev_token_change_me
+LOCAL_USERNAME ?= local_user
+LOCAL_PASSWORD ?= local_password_change_me
+SERVICE_IDENTITY_NAME ?= processor
+PROVIDER_NAME ?= fake
+OBJECT_STORE_BUCKET ?= urdu-pipeline-local
+OBJECT_STORE_REGION ?= local
+LOCAL_OBJECT_STORE_ENDPOINT_URL ?= http://localhost:9000
+OBJECT_STORE_ACCESS_KEY ?= urdu_pipeline
+OBJECT_STORE_SECRET_KEY ?= urdu_pipeline_local_password
 
 export OUTPUT_ROOT
 
@@ -21,7 +39,7 @@ PAID_FLAG = $(if $(filter 1 true TRUE yes YES y Y,$(CONFIRM_PAID_RUN)),--confirm
 CHUNK_LENGTH_FLAG = $(if $(strip $(CHUNK_LENGTH_SECONDS)),--chunk-length-seconds $(CHUNK_LENGTH_SECONDS),)
 OVERLAP_FLAG = $(if $(strip $(OVERLAP_SECONDS)),--overlap-seconds $(OVERLAP_SECONDS),)
 
-.PHONY: help latest-run chunk transcribe reconcile translate article to-transcribe to-reconcile to-translate to-article migrate-db compose-up compose-test
+.PHONY: help latest-run chunk transcribe reconcile translate article to-transcribe to-reconcile to-translate to-article migrate-db api-dev processor-dev compose-up compose-down compose-test compose-setup compose-migrate compose-seed-user compose-seed-service-identity compose-seed-provider-config compose-seed-bucket
 
 REQUIRE_AUDIO = if [[ -z "$(AUDIO)" ]]; then echo "AUDIO is required. Example: make $@ AUDIO='inputs/example.mp3'"; exit 1; fi
 RESOLVE_RUN_DIR = run_dir="$(RUN_DIR)"; if [[ -z "$$run_dir" ]]; then run_dir="$$(ls -td "$(RUNS_DIR)"/* 2>/dev/null | head -n1 || true)"; fi; if [[ -z "$$run_dir" ]]; then echo "No run directory found under $(RUNS_DIR). Pass RUN_DIR=... or create one with: make chunk AUDIO='inputs/example.mp3'"; exit 1; fi; echo "Using run directory: $$run_dir"
@@ -52,10 +70,17 @@ help:
 		'  OVERLAP_SECONDS=60         overrides overlap for chunk/to-* targets' \
 		'  PYTHON=.venv/bin/python    overrides the interpreter used' \
 		'' \
-		'Local API stack placeholders' \
+		'Local API stack' \
 		'  make migrate-db            run PostgreSQL metadata migrations' \
-		'  make compose-up            reserved for the future local API stack' \
-		'  make compose-test          reserved for future local stack tests' \
+		'  make api-dev               run the FastAPI app locally' \
+		'  make processor-dev         validate/run the processor command locally' \
+		'  make compose-up            build and start the local parity stack' \
+		'  make compose-down          stop the local parity stack' \
+		'  make compose-setup         run compose-up plus local setup commands' \
+		'  make compose-test          validate and smoke-check the compose stack' \
+		'  make compose-migrate       run DB migrations against compose PostgreSQL' \
+		'  make compose-seed-user     create a local login user' \
+		'  make compose-seed-bucket   ensure the local MinIO bucket exists' \
 		'' \
 		'Useful helper' \
 		'  make latest-run'
@@ -64,19 +89,56 @@ latest-run:
 	set -euo pipefail; $(RESOLVE_RUN_DIR)
 
 compose-up:
-	set -euo pipefail; \
-	echo "compose-up is not implemented yet."; \
-	echo "The local stack skeleton can be validated with: docker compose --env-file .env.local.example config"; \
-	exit 2
+	set -euo pipefail; $(COMPOSE_CMD) up --build -d --wait
+
+compose-down:
+	set -euo pipefail; $(COMPOSE_CMD) down
 
 compose-test:
 	set -euo pipefail; \
-	echo "compose-test is not implemented yet."; \
-	echo "The local stack skeleton can be validated with: docker compose --env-file .env.local.example config"; \
-	exit 2
+	$(COMPOSE_CMD) config >/dev/null; \
+	$(COMPOSE_CMD) up --build -d --wait; \
+	$(COMPOSE_CMD) ps; \
+	$(COMPOSE_CMD) exec -T api python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"; \
+	$(COMPOSE_CMD) exec -T processor test -f /tmp/processor-ready
+
+compose-setup:
+	set -euo pipefail; \
+	$(MAKE) compose-up; \
+	$(MAKE) compose-migrate; \
+	$(MAKE) compose-seed-bucket; \
+	$(MAKE) compose-seed-user; \
+	$(MAKE) compose-seed-service-identity; \
+	$(MAKE) compose-seed-provider-config
+
+compose-migrate:
+	set -euo pipefail; $(CLI) migrate-db --database-url "$(LOCAL_DATABASE_URL)"
+
+compose-seed-user:
+	set -euo pipefail; $(CLI) admin-create-user --username "$(LOCAL_USERNAME)" --password "$(LOCAL_PASSWORD)" --database-url "$(LOCAL_DATABASE_URL)"
+
+compose-seed-service-identity:
+	set -euo pipefail; $(CLI) seed-service-identity --name "$(SERVICE_IDENTITY_NAME)" --database-url "$(LOCAL_DATABASE_URL)"
+
+compose-seed-provider-config:
+	set -euo pipefail; $(CLI) seed-provider-config --provider-name "$(PROVIDER_NAME)" --database-url "$(LOCAL_DATABASE_URL)"
+
+compose-seed-bucket:
+	set -euo pipefail; \
+	OBJECT_STORE_ACCESS_KEY="$(OBJECT_STORE_ACCESS_KEY)" \
+	OBJECT_STORE_SECRET_KEY="$(OBJECT_STORE_SECRET_KEY)" \
+	AWS_ACCESS_KEY_ID="$(OBJECT_STORE_ACCESS_KEY)" \
+	AWS_SECRET_ACCESS_KEY="$(OBJECT_STORE_SECRET_KEY)" \
+	$(CLI) seed-bucket --bucket "$(OBJECT_STORE_BUCKET)" --endpoint-url "$(LOCAL_OBJECT_STORE_ENDPOINT_URL)" --region "$(OBJECT_STORE_REGION)"
 
 migrate-db:
 	set -euo pipefail; $(CLI) migrate-db --database-url "$(DATABASE_URL)"
+
+api-dev:
+	set -euo pipefail; $(UVICORN) urdu_pipeline.api.app:create_app --factory --host "$(API_HOST)" --port "$(API_PORT)"
+
+processor-dev:
+	set -euo pipefail; SERVICE_AUTH_TOKEN="$(SERVICE_AUTH_TOKEN)" $(CLI) process --api-url "$(PROCESSOR_API_URL)"
 
 chunk:
 	set -euo pipefail; $(REQUIRE_AUDIO); $(CLI) chunk --audio "$(AUDIO)" $(CHUNK_LENGTH_FLAG) $(OVERLAP_FLAG)

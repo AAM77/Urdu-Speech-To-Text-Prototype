@@ -1,6 +1,6 @@
 # Cloud-Agnostic API Conversion Progress Handoff
 
-Last updated: 2026-06-07 (session 8)
+Last updated: 2026-06-07 (session 9)
 
 This document summarizes what has been completed from
 `cloud_agnostic_api_conversion_stepwise_commit_plan.md`, why each part exists,
@@ -58,18 +58,21 @@ Completed through:
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
 - Stage 4 (complete)
 - Stage 5 (complete)
-- Stage 6 through Step 6.1.2
+- Stage 6 through Step 6.2.1
 
 Next step in the original plan:
 
-- Stage 6: Step 6.2.1 — Add Local Setup Commands
+- Stage 6: Step 6.2.2 — Add Local Workflow Documentation
 
 Most recent verification:
 
-- Combined unit + safe integration: `804 passed, 3 skipped`
+- Combined unit + safe integration: `813 passed, 3 skipped`
 - Targeted container packaging tests: `3 passed`
 - Targeted Compose service tests: `5 passed`
-- Targeted packaging + compose + Makefile tests: `20 passed`
+- Targeted Compose + Makefile tests: `26 passed`
+- Makefile local stack tests: `21 passed`
+- `make --no-print-directory -n compose-setup`: passed dry-run command review
+- `make --no-print-directory -n compose-test`: passed dry-run command review
 - `docker compose --env-file .env.local.example --profile proxy config`: passed
 - `git diff --check`: passed
 - Docker build/start smoke attempted, but Docker daemon was not reachable at
@@ -1206,6 +1209,94 @@ Needed for provider switch only?
 
 - No. This is local parity/backend deployment infrastructure.
 
+### Phase 6.2: Local Commands, Docs, And E2E
+
+### Step 6.2.1: Add Local Setup Commands
+
+What was done (strict TDD — tests written and confirmed failing before implementation):
+
+- Updated `tests/integration_safe/test_makefile.py` before implementation.
+- The red run failed for expected reasons:
+  - Missing `api-dev`, `processor-dev`, `compose-down`, `compose-setup`, and
+    individual compose setup targets.
+  - Existing `compose-up` and `compose-test` still printed "not implemented yet".
+- Replaced placeholder Makefile targets with concrete local-stack commands.
+- Added runtime targets:
+  - `make api-dev` — runs `uvicorn
+    urdu_pipeline.api.app:create_app --factory` with configurable
+    `API_HOST`/`API_PORT`.
+  - `make processor-dev` — runs `urdu-pipeline process` through the local CLI
+    with configurable `SERVICE_AUTH_TOKEN` and `PROCESSOR_API_URL`.
+  - `make compose-up` — runs `docker compose --env-file .env.local.example up
+    --build -d --wait`.
+  - `make compose-down` — runs `docker compose --env-file .env.local.example
+    down`.
+  - `make compose-test` — validates compose config, starts the stack with
+    `--wait`, prints service status, checks API `/health`, and checks the
+    processor readiness marker.
+- Added setup targets:
+  - `make compose-migrate` — runs metadata migrations against local published
+    PostgreSQL via `LOCAL_DATABASE_URL`.
+  - `make compose-seed-bucket` — ensures the local MinIO bucket exists via the
+    host CLI and `LOCAL_OBJECT_STORE_ENDPOINT_URL`.
+  - `make compose-seed-user` — creates a local login user with
+    `admin-create-user` and configurable `LOCAL_USERNAME`/`LOCAL_PASSWORD`.
+  - `make compose-seed-service-identity` — seeds a processor service identity.
+  - `make compose-seed-provider-config` — seeds the fake-provider config by
+    default.
+  - `make compose-setup` — runs compose-up, migrations, bucket setup, user
+    seed, service identity seed, and provider config seed in order.
+- Updated Makefile help output and `.PHONY` declarations for all new targets.
+
+Implementation note:
+
+- The setup targets intentionally run through the local venv CLI against
+  published localhost ports instead of `docker compose run processor`.
+  The processor image is a processor runtime, while the local operator machine
+  already has the dev extra set available for admin/password hashing commands.
+
+Verification:
+
+- Red Makefile test run before implementation:
+  `.venv/bin/python -m pytest tests/integration_safe/test_makefile.py -q`
+  failed with 11 expected target/placeholder failures.
+- Targeted Makefile tests after implementation:
+  `.venv/bin/python -m pytest tests/integration_safe/test_makefile.py -q`
+  passed (`21 passed`).
+- Targeted Compose + Makefile tests:
+  `.venv/bin/python -m pytest tests/unit/test_compose_services.py tests/integration_safe/test_makefile.py -q`
+  passed (`26 passed`).
+- Dry-run command review:
+  `make --no-print-directory -n compose-setup` passed and printed setup targets
+  in the expected order.
+- Dry-run compose smoke review:
+  `make --no-print-directory -n compose-test` passed and printed config/start,
+  `ps`, API health, and processor-ready checks.
+- Compose config validation:
+  `docker compose --env-file .env.local.example --profile proxy config` passed.
+- Full local unit + safe integration suite:
+  `.venv/bin/python -m pytest tests/unit tests/integration_safe -q`
+  passed (`813 passed, 3 skipped`).
+- `git diff --check` passed.
+- Real compose smoke:
+  `make --no-print-directory compose-test` could not run because the Docker
+  daemon was not reachable at
+  `unix:///Users/madeel/.colima/default/docker.sock`.
+
+Why it was needed:
+
+- Developers now have concrete commands for running API and processor surfaces
+  locally and for bringing up/down the Compose parity stack.
+- Local setup is decomposed into reviewable, repeatable commands for database
+  migrations, user creation, service identity creation, provider config seeding,
+  and bucket creation.
+- `compose-test` provides a smoke target for the stack without implementing the
+  full fake-provider E2E workflow reserved for Step 6.2.3.
+
+Needed for provider switch only?
+
+- No. This is local parity/backend workflow infrastructure.
+
 ## Later Completed Steps And Remaining Plan Status
 
 ### Step 4.2.4: Add CSRF, CORS, And Rate Limits
@@ -2045,7 +2136,6 @@ Make Docker Compose behave like the target backend stack.
 
 Remaining phases:
 
-- setup commands
 - workflow docs
 - compose fake-provider E2E test
 
@@ -2279,14 +2369,14 @@ Give the next AI these files first:
 Tell the next AI explicitly:
 
 - Current state: all local unit and safe integration tests pass
-  (`804 passed, 3 skipped`).
-- Stage 4 COMPLETE. Stage 5 COMPLETE. Stage 6 Step 6.1.1 and 6.1.2 COMPLETE.
+  (`813 passed, 3 skipped`).
+- Stage 4 COMPLETE. Stage 5 COMPLETE. Stage 6 Steps 6.1.1, 6.1.2, and 6.2.1 COMPLETE.
 - **Deployment target: AWS Lightsail** (decided 2026-06-07). Cloudflare is no
   longer the target. The architecture remains cloud-agnostic; only Stage 8
   content and Stage 9 provisioning changed in the plan. No code changes needed
   — all completed work was already cloud-agnostic.
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 6.2.1: Add Local Setup Commands.
+- Next step is Step 6.2.2: Add Local Workflow Documentation.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
@@ -2294,6 +2384,8 @@ Tell the next AI explicitly:
 - Do not revert unrelated work.
 - Use `.venv/bin/python -m pytest` (not bare `pytest`) to run tests.
 - Docker build/start smoke for Stage 6.1 still needs to be rerun once the local
+  Docker/Colima daemon is started.
+- Real `make compose-test` for Step 6.2.1 also needs to be rerun once the local
   Docker/Colima daemon is started.
 - The processor compose service currently validates `urdu-pipeline process
   --dry-run` and stays alive; the real long-running CLI loop is not wired yet.
@@ -2317,14 +2409,17 @@ Track B: continue backend conversion (currently active)
   `.dockerignore`, and packaging tests added).
 - **Stage 6 Step 6.1.2 is COMPLETE** (build-based compose services, health
   checks, env wiring, optional Nginx proxy profile, and compose config tests).
+- **Stage 6 Step 6.2.1 is COMPLETE** (local API/processor dev targets, compose
+  up/down/test, setup targets for migrations, bucket, user, service identity,
+  and provider config).
 - **Deployment target changed to AWS Lightsail** (2026-06-07).
   - Stage 8 has been rewritten as "AWS Production Adapter Verification"
     (S3, RDS, Redis/SQS, Secrets Manager adapters).
   - Stage 9 provisioning updated for AWS resources.
   - Stage 8 (Cloudflare spike) is fully replaced — no work to carry forward.
   - Nothing in Stages 1–5 needs to change.
-- Next step: Step 6.2.1 — Add Local Setup Commands.
-- Then Stage 6 docs/E2E, hardening (Stage 7), AWS adapter
+- Next step: Step 6.2.2 — Add Local Workflow Documentation.
+- Then Stage 6 E2E, hardening (Stage 7), AWS adapter
   verification (Stage 8), production deploy (Stage 9).
 
 Track C: stabilize and commit current work
