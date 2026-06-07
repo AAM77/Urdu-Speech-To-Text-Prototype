@@ -935,6 +935,29 @@ def test_postgres_metadata_store_usage_reservations_cache_and_actual_costs_survi
     assert third_store.get(scope, "cache-key") is None
 
 
+def test_postgres_metadata_store_cache_does_not_leak_across_users():
+    connection = FakeConnection()
+    store = PostgresMetadataStore(connection)
+    owner_a = _create_user_and_run(store)
+    owner_b = _create_user_and_run(store)
+    scope_a = CacheScope(user_id=owner_a.user_id, name="translator")
+    scope_b = CacheScope(user_id=owner_b.user_id, name="translator")
+
+    store.put(scope_a, "shared-key", {"value": "user-a-data"})
+    store.put(scope_b, "shared-key", {"value": "user-b-data"})
+
+    entry_a = store.get(scope_a, "shared-key")
+    entry_b = store.get(scope_b, "shared-key")
+    assert entry_a is not None and dict(entry_a.payload) == {"value": "user-a-data"}
+    assert entry_b is not None and dict(entry_b.payload) == {"value": "user-b-data"}
+
+    store.delete(scope_a, "shared-key")
+    assert store.get(scope_a, "shared-key") is None
+    assert store.get(scope_b, "shared-key") is not None, (
+        "deleting user A cache must not remove user B cache"
+    )
+
+
 def test_postgres_metadata_store_cleanup_task_creation_is_idempotent():
     connection = FakeConnection()
     store = PostgresMetadataStore(connection)

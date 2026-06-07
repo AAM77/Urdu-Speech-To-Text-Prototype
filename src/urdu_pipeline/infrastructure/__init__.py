@@ -17,8 +17,10 @@ from urdu_pipeline.infrastructure.in_memory import (
 )
 from urdu_pipeline.infrastructure.redis_queue import RedisJobQueue
 from urdu_pipeline.infrastructure.s3 import S3ObjectStore
+from urdu_pipeline.infrastructure.secrets import EnvSecretProvider
 
 __all__ = [
+    "EnvSecretProvider",
     "FilesystemArtifactSink",
     "FilesystemCacheStore",
     "FilesystemRunWorkspace",

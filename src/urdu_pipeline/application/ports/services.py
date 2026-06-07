@@ -129,6 +129,12 @@ class SecretValue:
     name: str
     value: str
 
+    def __repr__(self) -> str:
+        return f"SecretValue(name={self.name!r}, value=<redacted>)"
+
+    def __str__(self) -> str:
+        return f"SecretValue(name={self.name!r}, value=<redacted>)"
+
 
 @dataclass(frozen=True)
 class ProviderConfigSnapshot:
