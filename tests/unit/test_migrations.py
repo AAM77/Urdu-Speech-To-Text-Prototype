@@ -67,6 +67,72 @@ def test_load_migrations_includes_framework_bootstrap():
     assert "CREATE TABLE IF NOT EXISTS schema_migrations" in migrations[0].sql
 
 
+def test_load_migrations_includes_core_user_auth_upload_run_tables():
+    migrations = {migration.version: migration for migration in load_migrations()}
+
+    assert "0002" in migrations
+    assert migrations["0002"].name == "core_user_auth_upload_run_tables"
+
+
+def test_core_user_auth_upload_run_migration_creates_required_tables():
+    sql = _normalized_migration_sql("0002")
+
+    for table_name in (
+        "users",
+        "service_identities",
+        "sessions",
+        "api_tokens",
+        "uploads",
+        "runs",
+    ):
+        assert f"create table if not exists {table_name}" in sql
+
+
+def test_core_user_auth_upload_run_migration_defines_required_indexes():
+    sql = _normalized_migration_sql("0002")
+
+    for index_name in (
+        "idx_sessions_user_id",
+        "idx_sessions_expires_at",
+        "idx_api_tokens_user_id",
+        "idx_api_tokens_service_identity_id",
+        "idx_uploads_user_status",
+        "idx_uploads_created_at",
+        "idx_runs_user_status",
+        "idx_runs_upload_id",
+    ):
+        assert f"create index if not exists {index_name}" in sql
+
+
+def test_core_user_auth_upload_run_migration_defines_basic_constraints():
+    sql = _normalized_migration_sql("0002")
+
+    for constraint in (
+        "users_user_id_format",
+        "users_status_check",
+        "service_identities_service_identity_id_format",
+        "service_identities_status_check",
+        "sessions_non_empty_id",
+        "api_tokens_principal_owner_check",
+        "uploads_upload_id_format",
+        "uploads_status_check",
+        "runs_run_id_format",
+        "runs_status_check",
+    ):
+        assert f"constraint {constraint}" in sql
+
+    assert "unique (username)" in sql
+    assert "unique (name)" in sql
+    assert "unique (session_hash)" in sql
+    assert "unique (token_hash)" in sql
+    assert "foreign key (user_id) references users(user_id)" in sql
+    assert (
+        "foreign key (service_identity_id) "
+        "references service_identities(service_identity_id)"
+    ) in sql
+    assert "foreign key (upload_id) references uploads(upload_id)" in sql
+
+
 def test_run_migrations_applies_and_then_skips_existing_versions():
     migration = Migration(
         version="9999",
@@ -107,3 +173,8 @@ def test_database_url_is_configurable(monkeypatch):
     reset_settings_cache()
 
     assert get_settings().database_url == "postgresql://user:pass@localhost:15432/db"
+
+
+def _normalized_migration_sql(version: str) -> str:
+    migrations = {migration.version: migration for migration in load_migrations()}
+    return " ".join(migrations[version].sql.lower().split())
