@@ -1,6 +1,6 @@
 # Cloud-Agnostic API Conversion Progress Handoff
 
-Last updated: 2026-06-07 (session 11)
+Last updated: 2026-06-07 (session 12)
 
 This document summarizes what has been completed from
 `cloud_agnostic_api_conversion_stepwise_commit_plan.md`, why each part exists,
@@ -60,16 +60,19 @@ Completed through:
 - Stage 5 (complete)
 - Stage 6 (complete)
 - Stage 7 Step 7.1.1 (complete)
+- Stage 7 Step 7.1.2 (complete)
 
 Next step in the original plan:
 
-- Stage 7: Step 7.1.2 — Add Cleanup Scheduler
+- Stage 7: Step 7.1.3 — Add Failure-Mode Tests
 
 Most recent verification:
 
-- Combined unit + safe integration: `831 passed, 3 skipped`
-- Full unit suite: `807 passed`
+- Combined unit + safe integration: `839 passed, 3 skipped`
+- Full unit suite: `815 passed`
 - Safe integration suite: `24 passed, 3 skipped`
+- Targeted Stage 7.1.2 cleanup scheduler tests: `8 passed`
+- Affected cleanup/metadata/auth/upload/dependency tests: `205 passed`
 - Targeted Stage 7.1.1 redaction tests: `6 passed`
 - Affected PostgreSQL/API/processor tests: `112 passed`
 - Targeted compose fake-provider E2E contract tests: `10 passed`
@@ -2351,7 +2354,6 @@ Make the backend operable and safer under failure.
 
 Remaining phases:
 
-- cleanup scheduler
 - outage/failure-mode tests
 - backup/restore/operator docs
 
@@ -2422,6 +2424,73 @@ Provider-switch relevance:
 - Not required for switching providers, but protects real provider prompts,
   provider outputs, usage diagnostics, and object-storage details once real
   provider mode is enabled.
+
+### Step 7.1.2: Add Cleanup Scheduler
+
+What was done (strict TDD - tests written and confirmed failing before
+implementation):
+
+- Added `tests/unit/test_cleanup_scheduler.py` covering:
+  - expired single-part upload scheduling without duplicating tasks
+  - expiring uploads and deleting `uploads/{upload_id}` objects
+  - abandoned multipart upload abort plus upload status transition to `EXPIRED`
+  - terminal-run temporary chunk cleanup under
+    `tmp/users/{user_id}/runs/{run_id}/`
+  - expired session purge while preserving active sessions
+  - revoked bearer-token purge after retention while preserving active tokens
+  - failed cleanup retry rescheduling and later success
+  - succeeded cleanup tasks not re-running on repeated scheduler invocations
+- Confirmed all 8 tests failed before implementation because
+  `urdu_pipeline.processor.cleanup_scheduler` did not exist.
+- Added `src/urdu_pipeline/processor/cleanup_scheduler.py`:
+  - `CleanupSchedulerConfig`
+  - `CleanupSchedulerResult`
+  - `cleanup_task_id_for`
+  - `schedule_cleanup_tasks`
+  - `run_due_cleanup_tasks`
+  - `run_cleanup_scheduler`
+  - deterministic cleanup task IDs using `uuid5` so scheduling is idempotent
+  - task types for expiring uploads, deleting terminal-run tmp objects, purging
+    expired sessions, and purging revoked bearer tokens
+  - retry handling: due tasks are claimed, attempts increment, failures move to
+    `RETRYING` with `run_at = now + retry_delay`, and final failures move to
+    `FAILED`
+- Extended `CleanupTaskRecord` in
+  `src/urdu_pipeline/infrastructure/db/metadata.py` with the lifecycle fields
+  already present in the SQL migration:
+  - `attempts`
+  - `max_attempts`
+  - `updated_at`
+  - `completed_at`
+- Extended `InMemoryMetadataStore`:
+  - cleanup task create/get/list/claim/status-transition methods
+  - expired upload discovery
+  - terminal run discovery for tmp object cleanup
+  - expired session listing/deletion
+  - revoked bearer-token listing/deletion
+- Extended `PostgresMetadataStore`:
+  - cleanup task lifecycle column persistence and round-trip mapping
+  - due task claim with row locking / `FOR UPDATE SKIP LOCKED`
+  - cleanup task success/retry/failure transitions
+  - expired upload, terminal run, expired session, and revoked token queries
+  - expired session and revoked token deletion helpers
+- Updated the PostgreSQL metadata-store test fake to preserve the new cleanup
+  task lifecycle columns.
+
+Why it was needed:
+
+- Signed upload URLs, abandoned multipart uploads, expired browser sessions,
+  revoked API tokens, and temporary run chunks otherwise accumulate indefinitely.
+- Cleanup must be retryable and idempotent because object stores, databases, and
+  queues can fail independently.
+- The deterministic task IDs prevent duplicate cleanup rows from repeated
+  scheduler passes for the same resource.
+
+Provider-switch relevance:
+
+- Not required for CLI provider switching.
+- Needed before production operation to control storage cost, auth-token
+  retention, session hygiene, and cleanup recovery after infrastructure outages.
 
 ## Remaining Stage 8: Cloudflare Adapter Spike
 
@@ -2623,7 +2692,7 @@ Give the next AI these files first:
 Tell the next AI explicitly:
 
 - Current state: all local unit and safe integration tests pass
-  (`831 passed, 3 skipped`).
+  (`839 passed, 3 skipped`).
 - Stage 4 COMPLETE. Stage 5 COMPLETE. Stage 6 COMPLETE through Step 6.2.3.
 - **Deployment target: AWS Lightsail** (decided 2026-06-07). Cloudflare is no
   longer the target. The architecture remains cloud-agnostic; only Stage 8
@@ -2631,7 +2700,8 @@ Tell the next AI explicitly:
   — all completed work was already cloud-agnostic.
 - The goal is continuing the backend API conversion (Track B below).
 - Stage 7 Step 7.1.1 is complete.
-- Next step is Stage 7 Step 7.1.2: Add Cleanup Scheduler.
+- Stage 7 Step 7.1.2 is complete.
+- Next step is Stage 7 Step 7.1.3: Add Failure-Mode Tests.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
@@ -2680,7 +2750,10 @@ Track B: continue backend conversion (currently active)
 - **Stage 7 Step 7.1.1 is COMPLETE** (recursive structured logging
   redaction, API request logging, processor event sanitization, and PostgreSQL
   stage-event sanitization).
-- Next step: Stage 7 Step 7.1.2 — Add Cleanup Scheduler.
+- **Stage 7 Step 7.1.2 is COMPLETE** (cleanup scheduler, deterministic cleanup
+  tasks, retry handling, expired upload/session cleanup, revoked token purge,
+  multipart abort, and terminal-run tmp object cleanup).
+- Next step: Stage 7 Step 7.1.3 — Add Failure-Mode Tests.
 - Then AWS adapter verification (Stage 8), production deploy (Stage 9).
 
 Track C: stabilize and commit current work

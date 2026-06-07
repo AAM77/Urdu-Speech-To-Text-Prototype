@@ -94,6 +94,10 @@ class CleanupTaskRecord:
     run_at: datetime
     payload: Mapping[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
+    attempts: int = 0
+    max_attempts: int = 3
+    updated_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
+    completed_at: datetime | None = None
 
 
 class PostgresMetadataStore:
@@ -1390,10 +1394,14 @@ class PostgresMetadataStore:
                     task_type,
                     status,
                     run_at,
+                    attempts,
+                    max_attempts,
                     payload,
-                    created_at
+                    created_at,
+                    updated_at,
+                    completed_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (cleanup_task_id) DO NOTHING
                 """,
                 (
@@ -1403,8 +1411,12 @@ class PostgresMetadataStore:
                     record.task_type,
                     record.status.value,
                     record.run_at,
+                    record.attempts,
+                    record.max_attempts,
                     dict(record.payload),
                     record.created_at,
+                    record.updated_at,
+                    record.completed_at,
                 ),
             )
         )
@@ -1426,8 +1438,12 @@ class PostgresMetadataStore:
                        task_type,
                        status,
                        run_at,
+                       attempts,
+                       max_attempts,
                        payload,
-                       created_at
+                       created_at,
+                       updated_at,
+                       completed_at
                 FROM cleanup_tasks
                 WHERE cleanup_task_id = %s
                 """,
@@ -1435,6 +1451,282 @@ class PostgresMetadataStore:
             )
             row = cursor.fetchone()
         return _cleanup_task_from_row(row)
+
+    def claim_due_cleanup_tasks(
+        self,
+        *,
+        now: datetime,
+        limit: int,
+    ) -> Sequence[CleanupTaskRecord]:
+        if limit <= 0:
+            return []
+        try:
+            with self.connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    WITH due AS (
+                        SELECT cleanup_task_id
+                        FROM cleanup_tasks
+                        WHERE status IN ('pending', 'retrying')
+                          AND run_at <= %s
+                          AND attempts < max_attempts
+                        ORDER BY run_at, created_at, cleanup_task_id
+                        LIMIT %s
+                        FOR UPDATE SKIP LOCKED
+                    )
+                    UPDATE cleanup_tasks
+                    SET status = 'running',
+                        attempts = attempts + 1,
+                        updated_at = %s
+                    WHERE cleanup_task_id IN (SELECT cleanup_task_id FROM due)
+                    RETURNING cleanup_task_id,
+                              user_id,
+                              run_id,
+                              task_type,
+                              status,
+                              run_at,
+                              attempts,
+                              max_attempts,
+                              payload,
+                              created_at,
+                              updated_at,
+                              completed_at
+                    """,
+                    (now, limit, now),
+                )
+                rows = cursor.fetchall()
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+        return [_cleanup_task_from_row(row) for row in rows]
+
+    def mark_cleanup_task_succeeded(
+        self,
+        cleanup_task_id: CleanupTaskId,
+        *,
+        now: datetime,
+    ) -> CleanupTaskRecord:
+        return self._update_cleanup_task_status(
+            cleanup_task_id,
+            status=CleanupTaskStatus.SUCCEEDED,
+            run_at=None,
+            completed_at=now,
+            now=now,
+        )
+
+    def mark_cleanup_task_retrying(
+        self,
+        cleanup_task_id: CleanupTaskId,
+        *,
+        now: datetime,
+        next_run_at: datetime,
+    ) -> CleanupTaskRecord:
+        return self._update_cleanup_task_status(
+            cleanup_task_id,
+            status=CleanupTaskStatus.RETRYING,
+            run_at=next_run_at,
+            completed_at=None,
+            now=now,
+        )
+
+    def mark_cleanup_task_failed(
+        self,
+        cleanup_task_id: CleanupTaskId,
+        *,
+        now: datetime,
+    ) -> CleanupTaskRecord:
+        return self._update_cleanup_task_status(
+            cleanup_task_id,
+            status=CleanupTaskStatus.FAILED,
+            run_at=None,
+            completed_at=now,
+            now=now,
+        )
+
+    def list_uploads_ready_to_expire(
+        self,
+        *,
+        created_before: datetime,
+    ) -> Sequence[UploadRecord]:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id,
+                       upload_id,
+                       status,
+                       original_filename,
+                       content_type,
+                       size_bytes,
+                       multipart_upload_id,
+                       created_at
+                FROM uploads
+                WHERE status IN ('initialized', 'uploading')
+                  AND created_at <= %s
+                ORDER BY created_at, upload_id
+                """,
+                (created_before,),
+            )
+            rows = cursor.fetchall()
+        return [_upload_from_row(row) for row in rows]
+
+    def list_terminal_runs_for_tmp_cleanup(
+        self,
+        *,
+        created_before: datetime,
+    ) -> Sequence[RunRecord]:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id,
+                       run_id,
+                       status,
+                       upload_id,
+                       description,
+                       provider_config_version_id,
+                       created_at
+                FROM runs
+                WHERE status IN ('succeeded', 'failed', 'cancelled')
+                  AND created_at <= %s
+                ORDER BY created_at, run_id
+                """,
+                (created_before,),
+            )
+            rows = cursor.fetchall()
+        return [_run_from_row(row) for row in rows]
+
+    def list_expired_sessions(self, *, now: datetime) -> Sequence[SessionRecord]:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT session_id,
+                       user_id,
+                       session_hash,
+                       expires_at,
+                       created_at,
+                       revoked_at
+                FROM sessions
+                WHERE expires_at <= %s
+                ORDER BY expires_at, session_id
+                """,
+                (now,),
+            )
+            rows = cursor.fetchall()
+        return [_session_from_row(row) for row in rows]
+
+    def delete_expired_sessions(self, *, now: datetime) -> int:
+        try:
+            with self.connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    DELETE FROM sessions
+                    WHERE expires_at <= %s
+                    """,
+                    (now,),
+                )
+                deleted = getattr(cursor, "rowcount", 0)
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+        return int(deleted or 0)
+
+    def list_revoked_bearer_tokens(
+        self,
+        *,
+        revoked_before: datetime,
+    ) -> Sequence[BearerTokenRecord]:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT api_token_id,
+                       user_id,
+                       token_hash,
+                       name,
+                       description,
+                       created_at,
+                       expires_at,
+                       revoked_at,
+                       last_used_at
+                FROM api_tokens
+                WHERE principal_kind = 'user'
+                  AND revoked_at IS NOT NULL
+                  AND revoked_at <= %s
+                ORDER BY revoked_at, api_token_id
+                """,
+                (revoked_before,),
+            )
+            rows = cursor.fetchall()
+        return [_bearer_token_from_row(row) for row in rows]
+
+    def delete_revoked_bearer_tokens(self, *, revoked_before: datetime) -> int:
+        try:
+            with self.connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    DELETE FROM api_tokens
+                    WHERE principal_kind = 'user'
+                      AND revoked_at IS NOT NULL
+                      AND revoked_at <= %s
+                    """,
+                    (revoked_before,),
+                )
+                deleted = getattr(cursor, "rowcount", 0)
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+        return int(deleted or 0)
+
+    def _update_cleanup_task_status(
+        self,
+        cleanup_task_id: CleanupTaskId,
+        *,
+        status: CleanupTaskStatus,
+        run_at: datetime | None,
+        completed_at: datetime | None,
+        now: datetime,
+    ) -> CleanupTaskRecord:
+        try:
+            with self.connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    UPDATE cleanup_tasks
+                    SET status = %s,
+                        run_at = COALESCE(%s, run_at),
+                        updated_at = %s,
+                        completed_at = %s
+                    WHERE cleanup_task_id = %s
+                    RETURNING cleanup_task_id,
+                              user_id,
+                              run_id,
+                              task_type,
+                              status,
+                              run_at,
+                              attempts,
+                              max_attempts,
+                              payload,
+                              created_at,
+                              updated_at,
+                              completed_at
+                    """,
+                    (
+                        status.value,
+                        run_at,
+                        now,
+                        completed_at,
+                        str(cleanup_task_id),
+                    ),
+                )
+                row = cursor.fetchone()
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+        record = _cleanup_task_from_row(row)
+        if record is None:
+            raise KeyError(f"cleanup task not found: {cleanup_task_id}")
+        return record
 
     def _require_user(self, user_id: UserId) -> None:
         if self.get_user(user_id) is None:
@@ -1951,7 +2243,27 @@ def _cache_entry_from_row(scope: CacheScope, row: tuple[Any, ...] | None) -> Cac
 def _cleanup_task_from_row(row: tuple[Any, ...] | None) -> CleanupTaskRecord | None:
     if row is None:
         return None
-    cleanup_task_id, user_id, run_id, task_type, status, run_at, payload, created_at = row
+    if len(row) == 12:
+        (
+            cleanup_task_id,
+            user_id,
+            run_id,
+            task_type,
+            status,
+            run_at,
+            attempts,
+            max_attempts,
+            payload,
+            created_at,
+            updated_at,
+            completed_at,
+        ) = row
+    else:
+        cleanup_task_id, user_id, run_id, task_type, status, run_at, payload, created_at = row
+        attempts = 0
+        max_attempts = 3
+        updated_at = created_at
+        completed_at = None
     return CleanupTaskRecord(
         cleanup_task_id=CleanupTaskId(str(cleanup_task_id)),
         user_id=UserId(str(user_id)) if user_id is not None else None,
@@ -1961,6 +2273,10 @@ def _cleanup_task_from_row(row: tuple[Any, ...] | None) -> CleanupTaskRecord | N
         run_at=run_at,
         payload=dict(payload),
         created_at=created_at,
+        attempts=int(attempts),
+        max_attempts=int(max_attempts),
+        updated_at=updated_at,
+        completed_at=completed_at,
     )
 
 

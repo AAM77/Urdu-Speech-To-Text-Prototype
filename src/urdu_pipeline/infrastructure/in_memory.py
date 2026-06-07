@@ -6,7 +6,7 @@ import hashlib
 import io
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dc_replace
 from datetime import datetime, timedelta, timezone
 from typing import BinaryIO, Mapping, Sequence
 
@@ -48,12 +48,15 @@ from urdu_pipeline.domain import (
     ProviderConfigVersionId,
     ProviderRunId,
     RunId,
+    RunStatus,
     ServiceIdentityId,
     SessionId,
     TokenId,
     UploadId,
+    UploadStatus,
     UserId,
 )
+from urdu_pipeline.infrastructure.db.metadata import CleanupTaskRecord
 
 
 @dataclass(frozen=True)
@@ -257,6 +260,7 @@ class InMemoryMetadataStore:
         self._jobs: dict[JobId, JobRecord] = {}
         self._artifacts: dict[ArtifactId, ArtifactRecord] = {}
         self._artifact_document_chunks: dict[tuple[ArtifactId, int], object] = {}
+        self._cleanup_tasks: dict[object, CleanupTaskRecord] = {}
 
     def create_user(self, record: UserRecord) -> None:
         self._users[record.user_id] = record
@@ -440,6 +444,160 @@ class InMemoryMetadataStore:
             (r for r in self._artifacts.values() if r.user_id == user_id and r.run_id == run_id),
             key=lambda r: (r.created_at, str(r.artifact_id)),
         )
+
+    def list_uploads_ready_to_expire(self, *, created_before: datetime) -> Sequence[UploadRecord]:
+        return sorted(
+            (
+                record
+                for record in self._uploads.values()
+                if record.status in {UploadStatus.INITIALIZED, UploadStatus.UPLOADING}
+                and record.created_at <= created_before
+            ),
+            key=lambda record: (record.created_at, str(record.upload_id)),
+        )
+
+    def list_terminal_runs_for_tmp_cleanup(self, *, created_before: datetime) -> Sequence[RunRecord]:
+        return sorted(
+            (
+                record
+                for record in self._runs.values()
+                if record.status
+                in {RunStatus.SUCCEEDED, RunStatus.FAILED, RunStatus.CANCELLED}
+                and record.created_at <= created_before
+            ),
+            key=lambda record: (record.created_at, str(record.run_id)),
+        )
+
+    def list_expired_sessions(self, *, now: datetime) -> Sequence[SessionRecord]:
+        return sorted(
+            (record for record in self._sessions.values() if record.expires_at <= now),
+            key=lambda record: (record.expires_at, str(record.session_id)),
+        )
+
+    def delete_expired_sessions(self, *, now: datetime) -> int:
+        expired = list(self.list_expired_sessions(now=now))
+        for record in expired:
+            self._sessions.pop(record.session_id, None)
+            self._sessions_by_token_hash.pop(record.token_hash, None)
+        return len(expired)
+
+    def list_revoked_bearer_tokens(self, *, revoked_before: datetime) -> Sequence[BearerTokenRecord]:
+        return sorted(
+            (
+                record
+                for record in self._bearer_tokens.values()
+                if record.revoked_at is not None and record.revoked_at <= revoked_before
+            ),
+            key=lambda record: (record.revoked_at, str(record.token_id)),
+        )
+
+    def delete_revoked_bearer_tokens(self, *, revoked_before: datetime) -> int:
+        revoked = list(self.list_revoked_bearer_tokens(revoked_before=revoked_before))
+        for record in revoked:
+            self._bearer_tokens.pop(record.token_id, None)
+            self._bearer_tokens_by_hash.pop(record.token_hash, None)
+        return len(revoked)
+
+    def create_cleanup_task_once(self, record: CleanupTaskRecord) -> CleanupTaskRecord:
+        existing = self._cleanup_tasks.get(record.cleanup_task_id)
+        if existing is not None:
+            return existing
+        self._cleanup_tasks[record.cleanup_task_id] = record
+        return record
+
+    def get_cleanup_task(self, cleanup_task_id) -> CleanupTaskRecord | None:
+        return self._cleanup_tasks.get(cleanup_task_id)
+
+    def list_due_cleanup_tasks(
+        self,
+        *,
+        now: datetime,
+        limit: int,
+    ) -> Sequence[CleanupTaskRecord]:
+        if limit <= 0:
+            return []
+        due = [
+            record
+            for record in self._cleanup_tasks.values()
+            if record.status.value in {"pending", "retrying"}
+            and record.run_at <= now
+            and record.attempts < record.max_attempts
+        ]
+        return sorted(
+            due,
+            key=lambda record: (record.run_at, record.created_at, str(record.cleanup_task_id)),
+        )[:limit]
+
+    def claim_due_cleanup_tasks(
+        self,
+        *,
+        now: datetime,
+        limit: int,
+    ) -> Sequence[CleanupTaskRecord]:
+        from urdu_pipeline.domain import CleanupTaskStatus
+
+        claimed: list[CleanupTaskRecord] = []
+        for record in self.list_due_cleanup_tasks(now=now, limit=limit):
+            updated = dc_replace(
+                record,
+                status=CleanupTaskStatus.RUNNING,
+                attempts=record.attempts + 1,
+                updated_at=now,
+            )
+            self._cleanup_tasks[record.cleanup_task_id] = updated
+            claimed.append(updated)
+        return claimed
+
+    def mark_cleanup_task_succeeded(self, cleanup_task_id, *, now: datetime) -> CleanupTaskRecord:
+        from urdu_pipeline.domain import CleanupTaskStatus
+
+        record = self._require_cleanup_task(cleanup_task_id)
+        updated = dc_replace(
+            record,
+            status=CleanupTaskStatus.SUCCEEDED,
+            updated_at=now,
+            completed_at=now,
+        )
+        self._cleanup_tasks[record.cleanup_task_id] = updated
+        return updated
+
+    def mark_cleanup_task_retrying(
+        self,
+        cleanup_task_id,
+        *,
+        now: datetime,
+        next_run_at: datetime,
+    ) -> CleanupTaskRecord:
+        from urdu_pipeline.domain import CleanupTaskStatus
+
+        record = self._require_cleanup_task(cleanup_task_id)
+        updated = dc_replace(
+            record,
+            status=CleanupTaskStatus.RETRYING,
+            run_at=next_run_at,
+            updated_at=now,
+        )
+        self._cleanup_tasks[record.cleanup_task_id] = updated
+        return updated
+
+    def mark_cleanup_task_failed(self, cleanup_task_id, *, now: datetime) -> CleanupTaskRecord:
+        from urdu_pipeline.domain import CleanupTaskStatus
+
+        record = self._require_cleanup_task(cleanup_task_id)
+        updated = dc_replace(
+            record,
+            status=CleanupTaskStatus.FAILED,
+            updated_at=now,
+            completed_at=now,
+        )
+        self._cleanup_tasks[record.cleanup_task_id] = updated
+        return updated
+
+    def _require_cleanup_task(self, cleanup_task_id) -> CleanupTaskRecord:
+        record = self._cleanup_tasks.get(cleanup_task_id)
+        if record is None:
+            raise KeyError(f"cleanup task not found: {cleanup_task_id}")
+        return record
 
     def _require_user(self, user_id: UserId) -> None:
         if user_id not in self._users:

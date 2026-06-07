@@ -673,10 +673,36 @@ class FakeCursor:
             self.rowcount = 1 if deleted is not None else 0
         elif statement.startswith("insert into cleanup_tasks"):
             assert params is not None
-            cleanup_task_id, user_id, run_id, task_type, status, run_at, payload, created_at = params
+            (
+                cleanup_task_id,
+                user_id,
+                run_id,
+                task_type,
+                status,
+                run_at,
+                attempts,
+                max_attempts,
+                payload,
+                created_at,
+                updated_at,
+                completed_at,
+            ) = params
             self.connection.cleanup_tasks.setdefault(
                 cleanup_task_id,
-                (cleanup_task_id, user_id, run_id, task_type, status, run_at, payload, created_at),
+                (
+                    cleanup_task_id,
+                    user_id,
+                    run_id,
+                    task_type,
+                    status,
+                    run_at,
+                    attempts,
+                    max_attempts,
+                    payload,
+                    created_at,
+                    updated_at,
+                    completed_at,
+                ),
             )
         elif statement.startswith("select cleanup_task_id"):
             assert params is not None
