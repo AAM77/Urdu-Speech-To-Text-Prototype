@@ -56,15 +56,15 @@ Completed through:
 - Stage 1
 - Stage 2
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
-- Stage 4 (complete) + Stage 5 through Step 5.1.2
+- Stage 4 (complete) + Stage 5 through Step 5.2.1
 
 Next step in the original plan:
 
-- Step 5.2.1: Materialize Workspace And Validate Audio
+- Step 5.2.2: Run Chunker And Persist Chunk Manifest
 
 Most recent verification:
 
-- Combined unit + safe integration: `701 passed, 3 skipped`
+- Combined unit + safe integration: `726 passed, 3 skipped`
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -1149,6 +1149,65 @@ Provider-switch relevance:
 
 - Not required for CLI provider switching.
 
+### Step 5.2.1: Materialize Workspace And Validate Audio
+
+What was done:
+
+- Wrote `tests/unit/test_processor_workspace.py` (25 tests) before any
+  implementation, covering all paths under TDD.
+
+- Created `src/urdu_pipeline/processor/workspace.py` with:
+  - `AudioValidationError(FatalJobError)` — concrete fatal error for
+    unprocessable audio (missing ffprobe, corrupt file, zero duration).
+  - `_upload_object_key(upload_id)` — derives `"uploads/{upload_id}"` to match
+    the key written by the API upload routes exactly.
+  - `_safe_input_filename(original_filename)` — strips directory parts,
+    replaces non-alphanumeric characters with underscores, and falls back to
+    `"audio.bin"` for empty or dot-leading results.
+  - `materialize_upload(job_record, *, metadata_store, object_store, workspace)`
+    — looks up `RunRecord → upload_id → UploadRecord`, derives the object key,
+    streams the binary from `ObjectStore.get_stream` to
+    `workspace.input_path(safe_filename)`, and returns the local `Path`.
+    Raises `FatalJobError` if the run has no upload_id, if the upload record
+    is missing, or if the object cannot be read from the store.
+  - `validate_audio(audio_path)` — runs `ffprobe -show_entries format=duration
+    -of json`, parses the output, and returns the duration in seconds.
+    Raises `AudioValidationError` for FileNotFoundError (ffprobe absent),
+    CalledProcessError (non-zero exit), missing/zero/negative duration, or
+    unparseable JSON output.
+
+- Tests cover:
+  - Happy path: bytes written correctly, correct filename, path inside workspace.
+  - Original filename propagation and fallback when `original_filename` is None.
+  - Traversal-style filenames sanitized (`../../etc/passwd.mp3` → `passwd.mp3`).
+  - Unicode and space characters in filenames sanitized safely.
+  - `FatalJobError` raised when run not found, run has no upload_id, upload
+    record missing, or object missing from object store.
+  - `_safe_input_filename` unit tests: directory stripping, unsafe-char
+    replacement, fallback for empty result, single-component guarantee.
+  - `validate_audio` with mocked ffprobe: returns float duration, raises on
+    non-zero exit, FileNotFoundError, zero duration, negative duration, missing
+    duration key, and unparseable JSON.
+  - `AudioValidationError` confirmed to be a subclass of `FatalJobError`.
+  - Workspace cleanup removes scratch files.
+
+- Test count: 726 passed, 3 skipped.
+
+Why it was needed:
+
+- The processor cannot run any pipeline stage (chunker, transcriber, …) until
+  the audio file exists locally. Materializing the upload bridges the gap
+  between the API-side object-store write and the processor-side execution.
+- Validating with `ffprobe` before the expensive chunker+transcription pipeline
+  surfaces corrupt-file failures cheaply and immediately, rather than inside a
+  long-running stage.
+- `AudioValidationError` extends `FatalJobError` so `claim_and_run` marks the
+  job terminal without retrying an intrinsically unprocessable input.
+
+Provider-switch relevance:
+
+- Not required for CLI provider switching.
+
 ### Step 5.1.2: Implement Claim, Heartbeat, Lease, Retry, Cancel, Dead-Letter
 
 What was done:
@@ -1766,14 +1825,14 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- Current state: all unit and safe integration tests pass (701 passed, 3 skipped).
-- Stage 4 COMPLETE. Stage 5 in progress (Steps 5.1.1 and 5.1.2 done).
+- Current state: all unit and safe integration tests pass (726 passed, 3 skipped).
+- Stage 4 COMPLETE. Stage 5 in progress (Steps 5.1.1, 5.1.2, and 5.2.1 done).
 - **Deployment target: AWS Lightsail** (decided 2026-06-07). Cloudflare is no
   longer the target. The architecture remains cloud-agnostic; only Stage 8
   content and Stage 9 provisioning changed in the plan. No code changes needed
   — all completed work was already cloud-agnostic.
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 5.2.1: Materialize Workspace And Validate Audio.
+- Next step is Step 5.2.2: Run Chunker And Persist Chunk Manifest.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
@@ -1795,13 +1854,14 @@ Track A: switch AI provider now
 Track B: continue backend conversion (currently active)
 
 - Stage 4 is COMPLETE. Stage 5 Phase 5.1 is COMPLETE (5.1.1 + 5.1.2 done).
+  Step 5.2.1 is also COMPLETE.
 - **Deployment target changed to AWS Lightsail** (2026-06-07).
   - Stage 8 has been rewritten as "AWS Production Adapter Verification"
     (S3, RDS, Redis/SQS, Secrets Manager adapters).
   - Stage 9 provisioning updated for AWS resources.
   - Stage 8 (Cloudflare spike) is fully replaced — no work to carry forward.
-  - Nothing in Stages 1–5.1.1 needs to change.
-- Next step: Step 5.2.1 — Materialize Workspace And Validate Audio.
+  - Nothing in Stages 1–5.2.1 needs to change.
+- Next step: Step 5.2.2 — Run Chunker And Persist Chunk Manifest.
 - Then pipeline integration (5.2.2–5.2.4), failure handling (5.3.x), local
   parity stack (Stage 6), hardening (Stage 7), AWS adapter verification
   (Stage 8), production deploy (Stage 9).
