@@ -1703,6 +1703,10 @@ Tell the next AI explicitly:
 
 - Current state: all unit and safe integration tests pass (673 passed, 3 skipped).
 - Stage 4 COMPLETE. Stage 5 in progress (Step 5.1.1 done).
+- **Deployment target: AWS Lightsail** (decided 2026-06-07). Cloudflare is no
+  longer the target. The architecture remains cloud-agnostic; only Stage 8
+  content and Stage 9 provisioning changed in the plan. No code changes needed
+  — all completed work was already cloud-agnostic.
 - The goal is continuing the backend API conversion (Track B below).
 - Next step is Step 5.1.2: Implement Claim, Heartbeat, Lease, Retry, Cancel, Dead-Letter.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
@@ -1726,8 +1730,15 @@ Track A: switch AI provider now
 Track B: continue backend conversion (currently active)
 
 - Stage 4 is COMPLETE. Stage 5 is underway (Step 5.1.1 done).
+- **Deployment target changed to AWS Lightsail** (2026-06-07).
+  - Stage 8 has been rewritten as "AWS Production Adapter Verification"
+    (S3, RDS, Redis/SQS, Secrets Manager adapters).
+  - Stage 9 provisioning updated for AWS resources.
+  - Stage 8 (Cloudflare spike) is fully replaced — no work to carry forward.
+  - Nothing in Stages 1–5.1.1 needs to change.
 - Next step: Step 5.1.2 — Implement Claim, Heartbeat, Lease, Retry, Cancel, Dead-Letter.
-- Then pipeline integration (5.2.x), local parity stack (Stage 6).
+- Then pipeline integration (5.2.x), local parity stack (Stage 6), hardening
+  (Stage 7), AWS adapter verification (Stage 8), production deploy (Stage 9).
 
 Track C: stabilize and commit current work
 

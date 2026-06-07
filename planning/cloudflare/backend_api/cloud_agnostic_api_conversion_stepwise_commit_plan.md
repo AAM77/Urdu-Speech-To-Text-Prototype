@@ -6,8 +6,14 @@ Updated: 2026-06-06
 
 Convert the existing Urdu speech-to-text CLI/Streamlit prototype into a secure
 API-backed application that can be developed and tested locally in a
-production-like environment. Cloudflare Free is the first likely cloud target,
-but Cloudflare must remain an adapter, not the core application architecture.
+production-like environment.
+
+**Deployment target: AWS Lightsail** (initial), with a clear migration path to
+full AWS services (ECS, RDS, S3, SQS/ElastiCache, Secrets Manager) or any
+other cloud provider. The core architecture must remain cloud-agnostic: every
+cloud service is accessed through an adapter implementing a port interface.
+No cloud provider SDK or hosting framework is ever imported into domain or
+application modules.
 
 This plan contains the same architectural direction as
 `cloud_agnostic_api_conversion_plan.md`, reorganized into numbered stages,
@@ -92,26 +98,42 @@ Frontend/API client
   -> Provider registry + secret provider + model provider clients
 ```
 
-Cloudflare-first experiment:
+AWS Lightsail initial target:
 
 ```text
-Cloudflare Worker or Pages Function as thin ingress only
-  -> same API contract or proxy to FastAPI
-  -> R2 object storage adapter
-  -> external PostgreSQL first, D1 only after contract-test acceptance
-  -> queue adapter
-  -> external Python processor
+Frontend/API client
+  -> FastAPI API service in a Lightsail container or instance
+  -> Lightsail managed PostgreSQL (or RDS)
+  -> AWS S3 bucket (same port as the local MinIO adapter, different config)
+  -> Lightsail managed Redis (or ElastiCache) for the job queue
+  -> Python processor container (Lightsail container or separate instance)
+  -> AWS Secrets Manager (or SSM Parameter Store) for runtime secrets
 ```
 
-Cloudflare constraints:
+Migration path to full AWS (when needed):
 
-- Do not run the full pipeline, `ffmpeg`, or long-running processor inside
-  Workers.
-- Use signed object-storage upload URLs because edge request-body limits matter.
-- Treat D1 as a possible adapter only after PostgreSQL/local contract tests are
-  stable and D1 limits are accepted.
-- Re-check current Cloudflare Workers, Python Workers, D1, R2, and Queues
-  limits immediately before any Cloudflare deployment work.
+```text
+Lightsail containers  ->  ECS (Fargate)  or  EKS
+Lightsail PostgreSQL  ->  RDS / Aurora Serverless
+Lightsail Redis       ->  ElastiCache
+AWS S3                ->  unchanged (already production-grade)
+Secrets Manager       ->  unchanged
+```
+
+AWS deployment constraints and guidelines:
+
+- Keep the processor as a separate container/process so it can use `ffmpeg` and
+  long-running work without HTTP timeout pressure on the API.
+- Use signed S3 upload URLs so clients upload directly to S3 without routing
+  large files through the API container.
+- The S3 adapter is already wired via the `ObjectStore` port; switching from
+  MinIO (local) to real S3 (production) is an environment config change only.
+- Store secrets in AWS Secrets Manager or SSM Parameter Store; inject at
+  container startup via the `SecretProvider` port.
+- IAM roles (not static keys) are preferred for S3, Secrets Manager, and SQS
+  access on Lightsail/ECS workloads.
+- Re-evaluate queue choice at Stage 8: SQS and ElastiCache/Redis are both
+  valid; the `JobQueue` port supports either via the adapter layer.
 
 ## Core Security Rules
 
@@ -167,7 +189,7 @@ review before the next step.
 ### Phase 0.1: Architecture Decisions
 
 Phase goal: create durable architecture records so later implementation choices
-do not drift into Cloudflare coupling.
+do not drift into any single-provider coupling.
 
 Phase stop rule: stop after every numbered step in this phase.
 
@@ -182,8 +204,10 @@ Implementation:
 - State that the Python processor is separate from the API.
 - State that PostgreSQL is the canonical local parity metadata database.
 - State that S3-compatible object storage is the object-store port target.
-- State that Cloudflare is an adapter/deployment option, not the business logic
-  source of truth.
+- State that AWS Lightsail is the initial deployment target, with a documented
+  migration path to full AWS (ECS, RDS, ElastiCache, SQS) or any other cloud.
+- State that all cloud providers (AWS, Cloudflare, GCP, Azure) remain adapter
+  options only — none is the business-logic source of truth.
 
 Verification:
 
@@ -1464,108 +1488,134 @@ Verification:
 - Run `git diff --check`.
 - Stop for review and commit.
 
-## Stage 8: Cloudflare Adapter Spike
+## Stage 8: AWS Production Adapter Verification
 
-Stage goal: evaluate Cloudflare as a replaceable adapter target without moving
-core business rules into Cloudflare-specific code.
+Stage goal: verify that each production AWS service works correctly behind its
+port adapter before first deployment.  No core code changes; only adapter
+implementations and config are touched.
 
 Stage stop rule: complete only one step, verify it, summarize it, and stop for
 review before the next step.
 
-### Phase 8.1: Cloudflare Limits And R2
+### Phase 8.1: Object Storage And Metadata
 
-Phase goal: start with the most appropriate Cloudflare adapter: object storage.
+Phase goal: confirm the production S3 and RDS adapters satisfy all existing
+contract tests against a real (or staging) AWS environment.
 
 Phase stop rule: stop after every numbered step in this phase.
 
-#### Step 8.1.1: Re-Verify Cloudflare Limits
+#### Step 8.1.1: Verify S3 ObjectStore Adapter Against AWS S3
 
-Tests first: not applicable for behavior.
+Tests first:
+
+- Enable the existing `ObjectStore` contract/smoke tests against a real or
+  staging S3 bucket by setting `RUN_S3_OBJECT_STORE_SMOKE=1` with real
+  AWS credentials.
+- Add S3-specific config tests (bucket name, region, IAM role vs key auth)
+  where needed.
 
 Implementation:
 
-- Re-check official docs for Workers, Python Workers, D1, R2, and Queues.
-- Update cloud deployment notes with current limits and dates.
+- Review and update the `S3ObjectStore` adapter (already MinIO-compatible) to
+  handle any AWS-specific behavior (presigned URL expiry, ACLs, server-side
+  encryption headers if required).
+- Document required IAM permissions for the API and processor roles.
+- Do not change the `ObjectStore` port interface.
+
+Verification:
+
+- Run `RUN_S3_OBJECT_STORE_SMOKE=1 make test-integration` against a staging
+  S3 bucket.
+- Stop for review and commit.
+
+#### Step 8.1.2: Verify PostgreSQL Metadata Store Against Managed RDS
+
+Tests first:
+
+- Enable the existing metadata/migration smoke tests against a real or staging
+  RDS PostgreSQL instance by setting `RUN_POSTGRES_MIGRATION_SMOKE=1`.
+
+Implementation:
+
+- Confirm migrations run cleanly against the RDS engine version in use.
+- Document connection pooling requirements (connection limits on Lightsail
+  PostgreSQL and RDS differ; configure `max_connections` accordingly).
+- Add `DATABASE_URL` guidance for SSL-required RDS connections
+  (`?sslmode=require`).
+
+Verification:
+
+- Run migration smoke tests against staging RDS.
+- Stop for review and commit.
+
+### Phase 8.2: Queue, Secrets, And Deployment Topology
+
+Phase goal: decide between Redis (ElastiCache/Lightsail managed) and SQS for
+the job queue, verify the secrets adapter, and document the final Lightsail
+container topology.
+
+Phase stop rule: stop after every numbered step in this phase.
+
+#### Step 8.2.1: Decide And Verify Queue Adapter (Redis vs SQS)
+
+Tests first:
+
+- Reuse the `JobQueue` lifecycle contract tests (`RUN_REDIS_JOB_QUEUE_SMOKE=1`)
+  against a Lightsail or staging ElastiCache Redis instance.
+- If evaluating SQS: implement a `SQSJobQueue` adapter and run the same
+  contract tests against a real SQS queue.
+
+Implementation:
+
+- Document Redis (Lightsail managed / ElastiCache) versus SQS tradeoffs:
+  visibility timeout semantics, dead-letter queues, at-least-once delivery,
+  long polling, IAM vs auth-token access, local dev parity.
+- Select and document the queue adapter for production.
+
+Verification:
+
+- Run queue contract tests against the chosen production adapter.
+- Stop for review and commit.
+
+#### Step 8.2.2: Verify Secrets Provider Adapter
+
+Tests first:
+
+- Add a smoke test for the AWS Secrets Manager or SSM Parameter Store adapter
+  that reads a canary secret in a staging environment.
+
+Implementation:
+
+- Implement `AWSSecretsManagerSecretProvider` or `SSMParameterSecretProvider`
+  adapter behind the `SecretProvider` port.
+- Document required IAM permissions for secret read access.
+- Ensure the local `InMemorySecretProvider` / env-file path remains fully
+  functional for local dev and CI (no production AWS required).
+
+Verification:
+
+- Run secrets smoke test against staging.
+- Stop for review and commit.
+
+#### Step 8.2.3: Document Final Lightsail Container Topology
+
+Tests first: not applicable for behavior; verify with `git diff --check`.
+
+Implementation:
+
+- Document the final Lightsail container service layout:
+  - API container service (public HTTPS, port 443).
+  - Processor container service (private, no public endpoint).
+  - Lightsail managed PostgreSQL (private endpoint).
+  - Lightsail managed Redis or ElastiCache (private endpoint).
+  - S3 bucket with least-privilege IAM roles per container.
+  - AWS Secrets Manager for runtime secrets.
+- Document the migration path to full AWS (ECS Fargate, RDS, ElastiCache,
+  SQS) when Lightsail limits are reached, without requiring code changes.
 
 Verification:
 
 - Run `git diff --check`.
-- Stop for review and commit.
-
-#### Step 8.1.2: Prototype R2 ObjectStore Adapter
-
-Tests first:
-
-- Reuse the `ObjectStore` contract tests.
-- Add R2-specific config tests where needed.
-
-Implementation:
-
-- Implement or prototype `CloudflareR2ObjectStore`.
-- Do not change core object-store interfaces unless contract tests prove a real
-  interface gap.
-
-Verification:
-
-- Run object-store contract tests against R2 or a staging equivalent.
-- Stop for review and commit.
-
-### Phase 8.2: Metadata, Queue, And Thin Worker Decisions
-
-Phase goal: decide whether additional Cloudflare adapters are practical.
-
-Phase stop rule: stop after every numbered step in this phase.
-
-#### Step 8.2.1: Decide External PostgreSQL Versus D1
-
-Tests first:
-
-- Run metadata contract tests against any D1-compatible local/staging setup
-  before accepting D1.
-
-Implementation:
-
-- Document D1 versus external PostgreSQL tradeoffs for storage, SQL semantics,
-  concurrency, row limits, migrations, and portability.
-- Select the first Cloudflare metadata strategy.
-
-Verification:
-
-- Run relevant metadata contract tests.
-- Stop for review and commit.
-
-#### Step 8.2.2: Prototype Cloudflare Queue Adapter If Still Appropriate
-
-Tests first:
-
-- Reuse the `JobQueue` lifecycle contract tests.
-
-Implementation:
-
-- Prototype Cloudflare Queue adapter only after job semantics are stable.
-- Keep persisted job state authoritative.
-
-Verification:
-
-- Run queue contract tests.
-- Stop for review and commit.
-
-#### Step 8.2.3: Prototype Thin Worker API Or Proxy If Still Appropriate
-
-Tests first:
-
-- Add contract tests proving the Worker implements or proxies the same OpenAPI
-  behavior for selected routes.
-
-Implementation:
-
-- Prototype only thin ingress/proxy behavior.
-- Do not move business rules into Worker code.
-- Audit dependencies carefully.
-
-Verification:
-
-- Run API contract tests for Worker/proxy behavior.
 - Stop for review and commit.
 
 ## Stage 9: First Production Deployment
@@ -1596,20 +1646,34 @@ Verification:
 - Run `git diff --check`.
 - Stop for review and commit.
 
-#### Step 9.1.2: Provision Secrets, Object Storage, Metadata DB, And Queue
+#### Step 9.1.2: Provision AWS Resources
 
 Tests first:
 
-- Add smoke checks for connectivity and least-privilege access where practical.
+- Add smoke checks for connectivity and least-privilege access for each
+  provisioned resource before deploying any application code.
 
 Implementation:
 
-- Provision production or staging resources.
-- Do not deploy the full app until smoke checks pass.
+- Provision production (or staging) resources using the topology documented
+  in Step 9.1.1:
+  - **S3 bucket**: versioning on, lifecycle rules for temporary-object cleanup,
+    bucket policy scoped to the API/processor IAM roles.
+  - **Lightsail managed PostgreSQL** (or RDS): SSL required, max_connections
+    sized for container count, automated backups enabled.
+  - **Lightsail managed Redis** (or ElastiCache): private endpoint, auth token
+    if required, persistence off (queue semantics are in job records).
+  - **Secrets**: store `SERVICE_AUTH_TOKEN`, `OPENAI_API_KEY`, and DB password
+    in AWS Secrets Manager; inject via environment at container startup.
+  - **IAM roles**: API role (S3 read/write, Secrets Manager read),
+    Processor role (S3 read/write, Secrets Manager read), principle of least
+    privilege throughout.
+- Do not deploy the full application until all smoke checks pass.
 
 Verification:
 
-- Run provisioning smoke checks.
+- Run provisioning smoke checks (S3 presigned URL, DB connectivity, Redis ping,
+  Secrets Manager read).
 - Stop for review and commit.
 
 ### Phase 9.2: Deploy And Smoke Test
@@ -1716,10 +1780,17 @@ Security acceptance:
   bodies, prompts, object keys, or complete artifact payloads.
 - Prompt-injection fixtures are covered by tests.
 
-Cloud readiness acceptance:
+Cloud readiness acceptance (AWS Lightsail target):
 
-- R2 or another object-store adapter passes `ObjectStore` contract tests.
-- Metadata adapter choice is documented with limit tradeoffs.
-- Queue adapter passes job lifecycle contract tests or is explicitly rejected.
-- Processor runtime is outside Workers or otherwise proven to support
-  `ffmpeg`, local scratch files, and long-running work.
+- AWS S3 `ObjectStore` adapter passes contract/smoke tests against a real
+  S3 bucket with least-privilege IAM role.
+- Lightsail managed PostgreSQL (or RDS) passes migration smoke tests including
+  SSL connection and engine-version compatibility.
+- Chosen queue adapter (Lightsail managed Redis, ElastiCache, or SQS) passes
+  `JobQueue` lifecycle contract tests.
+- AWS Secrets Manager (or SSM) `SecretProvider` adapter passes smoke tests.
+- Processor container is separate from the API container and is proven to
+  support `ffmpeg`, local scratch files, and long-running work.
+- Migration path to full AWS (ECS, RDS, ElastiCache, SQS) is documented
+  without requiring changes to domain, application, or route code — only
+  adapter config and IAM roles need updating.
