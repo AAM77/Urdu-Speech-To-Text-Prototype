@@ -12,6 +12,18 @@ from urdu_pipeline.providers.requests import (
 )
 
 
+class ProviderError(Exception):
+    """Base class for provider adapter failures."""
+
+
+class ProviderTransientError(ProviderError):
+    """Provider failure that should be retried by the processor lifecycle."""
+
+
+class ProviderFatalError(ProviderError):
+    """Provider failure that should fail the job without retry."""
+
+
 @dataclass
 class TranscriptionResult:
     text: str
@@ -57,3 +69,14 @@ class TextGenerationProvider(Protocol):
         *,
         prompt: str | None = None,
     ) -> TextGenerationResult: ...
+
+
+__all__ = [
+    "AudioTranscriptionProvider",
+    "ProviderError",
+    "ProviderFatalError",
+    "ProviderTransientError",
+    "TextGenerationProvider",
+    "TextGenerationResult",
+    "TranscriptionResult",
+]

@@ -1,6 +1,6 @@
 # Cloud-Agnostic API Conversion Progress Handoff
 
-Last updated: 2026-06-07 (session 12)
+Last updated: 2026-06-07 (session 13)
 
 This document summarizes what has been completed from
 `cloud_agnostic_api_conversion_stepwise_commit_plan.md`, why each part exists,
@@ -61,16 +61,20 @@ Completed through:
 - Stage 6 (complete)
 - Stage 7 Step 7.1.1 (complete)
 - Stage 7 Step 7.1.2 (complete)
+- Stage 7 Step 7.1.3 (complete)
 
 Next step in the original plan:
 
-- Stage 7: Step 7.1.3 — Add Failure-Mode Tests
+- Stage 7: Step 7.2.1 — Add Backup, Restore, And Operator Docs
 
 Most recent verification:
 
-- Combined unit + safe integration: `839 passed, 3 skipped`
-- Full unit suite: `815 passed`
+- Combined unit + safe integration: `847 passed, 3 skipped`
+- Full unit suite: `823 passed`
 - Safe integration suite: `24 passed, 3 skipped`
+- Targeted Stage 7.1.3 failure-mode tests: `7 passed`
+- Affected failure/lifecycle/artifact/provider/cleanup/metadata/migration
+  tests: `100 passed`
 - Targeted Stage 7.1.2 cleanup scheduler tests: `8 passed`
 - Affected cleanup/metadata/auth/upload/dependency tests: `205 passed`
 - Targeted Stage 7.1.1 redaction tests: `6 passed`
@@ -2354,7 +2358,6 @@ Make the backend operable and safer under failure.
 
 Remaining phases:
 
-- outage/failure-mode tests
 - backup/restore/operator docs
 
 Why needed:
@@ -2491,6 +2494,78 @@ Provider-switch relevance:
 - Not required for CLI provider switching.
 - Needed before production operation to control storage cost, auth-token
   retention, session hygiene, and cleanup recovery after infrastructure outages.
+
+### Step 7.1.3: Add Failure-Mode Tests
+
+What was done (strict TDD - tests written and confirmed failing before
+implementation):
+
+- Added `tests/unit/test_failure_modes.py` covering:
+  - database outage before the handler runs
+  - queue outage while acknowledging success
+  - object-store outage while writing artifacts
+  - partial artifact write where JSON succeeds and Markdown fails
+  - provider transient failure classification for retry
+  - retry exhaustion with redacted dead-letter reason
+  - cleanup final failure with observable, redacted error context
+- Confirmed the new tests failed before implementation:
+  - initial run: `6 failed, 1 passed`
+  - the failures exposed unreleased leases after metadata outage, success
+    metadata being published before queue acknowledgement, orphaned JSON
+    objects after partial artifact writes, missing provider failure classes,
+    unredacted dead-letter reasons, and missing cleanup `last_error`.
+- Updated `src/urdu_pipeline/processor/lifecycle.py`:
+  - metadata setup failures now release the lease for retry before propagating
+    the outage
+  - queue terminal actions happen before publishing terminal metadata statuses
+  - retry/dead-letter/terminal failure reasons are redacted before queue
+    persistence
+- Updated `src/urdu_pipeline/infrastructure/artifacts.py`:
+  - artifact object writes track written keys
+  - partial object writes are cleaned up if a later object write fails
+  - written objects are also cleaned up if metadata recording fails
+- Added provider failure contracts in `src/urdu_pipeline/providers/base.py`:
+  - `ProviderError`
+  - `ProviderTransientError`
+  - `ProviderFatalError`
+  - exported through `src/urdu_pipeline/providers/__init__.py`
+- Updated processor stage orchestrators:
+  - `src/urdu_pipeline/processor/transcriber.py` maps provider transient
+    failures to `TransientJobError` and provider fatal failures to
+    `FatalJobError`
+  - `src/urdu_pipeline/processor/pipeline.py` applies the same mapping to
+    translation and article-generation provider calls
+  - provider failure messages are redacted before they reach lifecycle retry
+    handling
+- Added cleanup failure observability:
+  - `CleanupTaskRecord.last_error`
+  - redacted `last_error` stored on retrying/finally failed cleanup tasks
+  - success clears `last_error`
+  - in-memory and PostgreSQL metadata adapters round-trip the field
+  - migration `0005_add_cleanup_task_last_error.sql`
+  - migration/PostgreSQL unit fakes updated for the new column
+
+Why it was needed:
+
+- Backend operations fail at independent adapter boundaries: database, queue,
+  object store, provider, and cleanup jobs can each fail while other state has
+  already changed.
+- The processor must avoid publishing terminal metadata before the queue has
+  accepted the terminal transition.
+- Partial durable artifact writes must not leave orphaned objects that look
+  valid on a later run.
+- Provider and retry failure diagnostics must remain useful without leaking
+  API keys, prompt/source text, object keys, tokens, or other sensitive data.
+- Cleanup failures need durable, redacted context so operators can understand
+  stuck cleanup work without inspecting logs.
+
+Provider-switch relevance:
+
+- Useful but not strictly required for a local CLI-only provider switch.
+- The provider failure classes and transient/fatal mapping are directly useful
+  for real provider adapters.
+- The object-store, queue, metadata, and cleanup hardening are backend
+  production concerns.
 
 ## Remaining Stage 8: Cloudflare Adapter Spike
 
@@ -2692,7 +2767,7 @@ Give the next AI these files first:
 Tell the next AI explicitly:
 
 - Current state: all local unit and safe integration tests pass
-  (`839 passed, 3 skipped`).
+  (`847 passed, 3 skipped`).
 - Stage 4 COMPLETE. Stage 5 COMPLETE. Stage 6 COMPLETE through Step 6.2.3.
 - **Deployment target: AWS Lightsail** (decided 2026-06-07). Cloudflare is no
   longer the target. The architecture remains cloud-agnostic; only Stage 8
@@ -2701,7 +2776,8 @@ Tell the next AI explicitly:
 - The goal is continuing the backend API conversion (Track B below).
 - Stage 7 Step 7.1.1 is complete.
 - Stage 7 Step 7.1.2 is complete.
-- Next step is Stage 7 Step 7.1.3: Add Failure-Mode Tests.
+- Stage 7 Step 7.1.3 is complete.
+- Next step is Stage 7 Step 7.2.1: Add Backup, Restore, And Operator Docs.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
@@ -2753,7 +2829,11 @@ Track B: continue backend conversion (currently active)
 - **Stage 7 Step 7.1.2 is COMPLETE** (cleanup scheduler, deterministic cleanup
   tasks, retry handling, expired upload/session cleanup, revoked token purge,
   multipart abort, and terminal-run tmp object cleanup).
-- Next step: Stage 7 Step 7.1.3 — Add Failure-Mode Tests.
+- **Stage 7 Step 7.1.3 is COMPLETE** (failure-mode tests, safer lifecycle
+  transitions, provider transient/fatal failure classification, partial
+  artifact cleanup, redacted retry/dead-letter reasons, and cleanup
+  `last_error` observability).
+- Next step: Stage 7 Step 7.2.1 — Add Backup, Restore, And Operator Docs.
 - Then AWS adapter verification (Stage 8), production deploy (Stage 9).
 
 Track C: stabilize and commit current work

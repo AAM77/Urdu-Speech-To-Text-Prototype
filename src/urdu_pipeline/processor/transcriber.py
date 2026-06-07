@@ -41,9 +41,14 @@ from urdu_pipeline.domain import (
     JobStatus,
     ProviderRunId,
 )
+from urdu_pipeline.logging_utils import redact_event_message
 from urdu_pipeline.processor.idempotency import find_stage_artifact, stage_usage_key
-from urdu_pipeline.processor.lifecycle import FatalJobError
-from urdu_pipeline.providers.base import TranscriptionResult
+from urdu_pipeline.processor.lifecycle import FatalJobError, TransientJobError
+from urdu_pipeline.providers.base import (
+    ProviderFatalError,
+    ProviderTransientError,
+    TranscriptionResult,
+)
 from urdu_pipeline.schemas.chunks import AudioChunk, ChunkManifestArtifact
 from urdu_pipeline.schemas.manifests import ArtifactManifest
 from urdu_pipeline.schemas.transcripts import (
@@ -129,7 +134,24 @@ def run_transcription_and_reconciliation(
     for chunk in sorted_chunks:
         _check_cancellation(job_record, metadata_store)
 
-        result = chunk_transcriber_fn(chunk)
+        try:
+            result = chunk_transcriber_fn(chunk)
+        except ProviderTransientError as exc:
+            raise TransientJobError(
+                _provider_failure_message(
+                    "transcription",
+                    exc,
+                    fallback="provider transient failure",
+                )
+            ) from exc
+        except ProviderFatalError as exc:
+            raise FatalJobError(
+                _provider_failure_message(
+                    "transcription",
+                    exc,
+                    fallback="provider fatal failure",
+                )
+            ) from exc
 
         raw_chunks.append(
             RawTranscriptChunk(
@@ -207,6 +229,16 @@ def _build_raw_artifact(
         chunks=raw_chunks,
         manifest=manifest,
     )
+
+
+def _provider_failure_message(
+    stage: str,
+    exc: Exception,
+    *,
+    fallback: str,
+) -> str:
+    safe_detail = redact_event_message(str(exc), fallback=type(exc).__name__)
+    return f"{fallback} during {stage}: {safe_detail}"
 
 
 __all__ = ["run_transcription_and_reconciliation"]

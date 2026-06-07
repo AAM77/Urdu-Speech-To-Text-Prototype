@@ -98,6 +98,7 @@ class CleanupTaskRecord:
     max_attempts: int = 3
     updated_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
     completed_at: datetime | None = None
+    last_error: str | None = None
 
 
 class PostgresMetadataStore:
@@ -1399,9 +1400,10 @@ class PostgresMetadataStore:
                     payload,
                     created_at,
                     updated_at,
-                    completed_at
+                    completed_at,
+                    last_error
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (cleanup_task_id) DO NOTHING
                 """,
                 (
@@ -1417,6 +1419,7 @@ class PostgresMetadataStore:
                     record.created_at,
                     record.updated_at,
                     record.completed_at,
+                    record.last_error,
                 ),
             )
         )
@@ -1443,7 +1446,8 @@ class PostgresMetadataStore:
                        payload,
                        created_at,
                        updated_at,
-                       completed_at
+                       completed_at,
+                       last_error
                 FROM cleanup_tasks
                 WHERE cleanup_task_id = %s
                 """,
@@ -1490,7 +1494,8 @@ class PostgresMetadataStore:
                               payload,
                               created_at,
                               updated_at,
-                              completed_at
+                              completed_at,
+                              last_error
                     """,
                     (now, limit, now),
                 )
@@ -1521,6 +1526,7 @@ class PostgresMetadataStore:
         *,
         now: datetime,
         next_run_at: datetime,
+        last_error: str | None = None,
     ) -> CleanupTaskRecord:
         return self._update_cleanup_task_status(
             cleanup_task_id,
@@ -1528,6 +1534,7 @@ class PostgresMetadataStore:
             run_at=next_run_at,
             completed_at=None,
             now=now,
+            last_error=last_error,
         )
 
     def mark_cleanup_task_failed(
@@ -1535,6 +1542,7 @@ class PostgresMetadataStore:
         cleanup_task_id: CleanupTaskId,
         *,
         now: datetime,
+        last_error: str | None = None,
     ) -> CleanupTaskRecord:
         return self._update_cleanup_task_status(
             cleanup_task_id,
@@ -1542,6 +1550,7 @@ class PostgresMetadataStore:
             run_at=None,
             completed_at=now,
             now=now,
+            last_error=last_error,
         )
 
     def list_uploads_ready_to_expire(
@@ -1686,6 +1695,7 @@ class PostgresMetadataStore:
         run_at: datetime | None,
         completed_at: datetime | None,
         now: datetime,
+        last_error: str | None = None,
     ) -> CleanupTaskRecord:
         try:
             with self.connection.cursor() as cursor:
@@ -1695,7 +1705,8 @@ class PostgresMetadataStore:
                     SET status = %s,
                         run_at = COALESCE(%s, run_at),
                         updated_at = %s,
-                        completed_at = %s
+                        completed_at = %s,
+                        last_error = %s
                     WHERE cleanup_task_id = %s
                     RETURNING cleanup_task_id,
                               user_id,
@@ -1708,13 +1719,15 @@ class PostgresMetadataStore:
                               payload,
                               created_at,
                               updated_at,
-                              completed_at
+                              completed_at,
+                              last_error
                     """,
                     (
                         status.value,
                         run_at,
                         now,
                         completed_at,
+                        last_error,
                         str(cleanup_task_id),
                     ),
                 )
@@ -2243,7 +2256,23 @@ def _cache_entry_from_row(scope: CacheScope, row: tuple[Any, ...] | None) -> Cac
 def _cleanup_task_from_row(row: tuple[Any, ...] | None) -> CleanupTaskRecord | None:
     if row is None:
         return None
-    if len(row) == 12:
+    if len(row) == 13:
+        (
+            cleanup_task_id,
+            user_id,
+            run_id,
+            task_type,
+            status,
+            run_at,
+            attempts,
+            max_attempts,
+            payload,
+            created_at,
+            updated_at,
+            completed_at,
+            last_error,
+        ) = row
+    elif len(row) == 12:
         (
             cleanup_task_id,
             user_id,
@@ -2258,12 +2287,14 @@ def _cleanup_task_from_row(row: tuple[Any, ...] | None) -> CleanupTaskRecord | N
             updated_at,
             completed_at,
         ) = row
+        last_error = None
     else:
         cleanup_task_id, user_id, run_id, task_type, status, run_at, payload, created_at = row
         attempts = 0
         max_attempts = 3
         updated_at = created_at
         completed_at = None
+        last_error = None
     return CleanupTaskRecord(
         cleanup_task_id=CleanupTaskId(str(cleanup_task_id)),
         user_id=UserId(str(user_id)) if user_id is not None else None,
@@ -2277,6 +2308,7 @@ def _cleanup_task_from_row(row: tuple[Any, ...] | None) -> CleanupTaskRecord | N
         max_attempts=int(max_attempts),
         updated_at=updated_at,
         completed_at=completed_at,
+        last_error=last_error,
     )
 
 

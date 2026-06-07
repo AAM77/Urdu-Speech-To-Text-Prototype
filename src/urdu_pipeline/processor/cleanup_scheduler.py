@@ -11,6 +11,7 @@ from urdu_pipeline.application.ports import MultipartUpload, ObjectStore
 from urdu_pipeline.application.ports.services import UploadRecord
 from urdu_pipeline.domain import CleanupTaskId, CleanupTaskStatus, RunId, UploadId, UploadStatus, UserId
 from urdu_pipeline.infrastructure.db.metadata import CleanupTaskRecord
+from urdu_pipeline.logging_utils import redact_event_message
 
 _SCHEDULER_NAMESPACE = uuid.UUID("4ef0f273-70fd-4952-921f-df0942a69e45")
 
@@ -190,11 +191,13 @@ def run_due_cleanup_tasks(
                 object_store=object_store,
                 now=effective_now,
             )
-        except Exception:
+        except Exception as exc:
+            last_error = _safe_error(exc)
             if task.attempts >= task.max_attempts:
                 metadata_store.mark_cleanup_task_failed(
                     task.cleanup_task_id,
                     now=effective_now,
+                    last_error=last_error,
                 )
                 result = result.merge(CleanupSchedulerResult(failed_count=1))
             else:
@@ -202,6 +205,7 @@ def run_due_cleanup_tasks(
                     task.cleanup_task_id,
                     now=effective_now,
                     next_run_at=effective_now + effective_config.retry_delay,
+                    last_error=last_error,
                 )
                 result = result.merge(CleanupSchedulerResult(retrying_count=1))
             continue
@@ -337,6 +341,10 @@ def _parse_datetime(value: str) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _safe_error(exc: Exception) -> str:
+    return redact_event_message(str(exc), fallback=type(exc).__name__) or type(exc).__name__
 
 
 __all__ = [

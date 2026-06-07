@@ -155,6 +155,15 @@ def test_load_migrations_includes_runtime_adapter_fields():
     assert "alter table api_tokens add column if not exists description text" in sql
 
 
+def test_load_migrations_includes_cleanup_task_last_error():
+    migrations = {migration.version: migration for migration in load_migrations()}
+
+    assert "0005" in migrations
+    assert migrations["0005"].name == "add_cleanup_task_last_error"
+    sql = _normalized_migration_sql("0005")
+    assert "alter table cleanup_tasks add column if not exists last_error text" in sql
+
+
 def test_workflow_metadata_migration_creates_required_tables():
     sql = _normalized_migration_sql("0003")
 

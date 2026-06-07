@@ -2,6 +2,9 @@
 
 from urdu_pipeline.providers.base import (
     AudioTranscriptionProvider,
+    ProviderError,
+    ProviderFatalError,
+    ProviderTransientError,
     TextGenerationProvider,
     TextGenerationResult,
     TranscriptionResult,
@@ -23,9 +26,12 @@ __all__ = [
     "AudioTranscriptionProvider",
     "FakeAudioTranscriptionProvider",
     "FakeTextGenerationProvider",
+    "ProviderError",
+    "ProviderFatalError",
     "ProviderPromptMetadata",
     "ProviderRequestChecksums",
     "ProviderSourceData",
+    "ProviderTransientError",
     "TextGenerationProvider",
     "TextGenerationRequest",
     "TextGenerationResult",

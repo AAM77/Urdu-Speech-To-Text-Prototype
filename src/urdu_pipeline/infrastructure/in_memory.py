@@ -557,6 +557,7 @@ class InMemoryMetadataStore:
             status=CleanupTaskStatus.SUCCEEDED,
             updated_at=now,
             completed_at=now,
+            last_error=None,
         )
         self._cleanup_tasks[record.cleanup_task_id] = updated
         return updated
@@ -567,6 +568,7 @@ class InMemoryMetadataStore:
         *,
         now: datetime,
         next_run_at: datetime,
+        last_error: str | None = None,
     ) -> CleanupTaskRecord:
         from urdu_pipeline.domain import CleanupTaskStatus
 
@@ -576,11 +578,18 @@ class InMemoryMetadataStore:
             status=CleanupTaskStatus.RETRYING,
             run_at=next_run_at,
             updated_at=now,
+            last_error=last_error,
         )
         self._cleanup_tasks[record.cleanup_task_id] = updated
         return updated
 
-    def mark_cleanup_task_failed(self, cleanup_task_id, *, now: datetime) -> CleanupTaskRecord:
+    def mark_cleanup_task_failed(
+        self,
+        cleanup_task_id,
+        *,
+        now: datetime,
+        last_error: str | None = None,
+    ) -> CleanupTaskRecord:
         from urdu_pipeline.domain import CleanupTaskStatus
 
         record = self._require_cleanup_task(cleanup_task_id)
@@ -589,6 +598,7 @@ class InMemoryMetadataStore:
             status=CleanupTaskStatus.FAILED,
             updated_at=now,
             completed_at=now,
+            last_error=last_error,
         )
         self._cleanup_tasks[record.cleanup_task_id] = updated
         return updated

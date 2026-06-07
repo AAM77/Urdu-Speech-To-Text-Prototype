@@ -686,6 +686,7 @@ class FakeCursor:
                 created_at,
                 updated_at,
                 completed_at,
+                last_error,
             ) = params
             self.connection.cleanup_tasks.setdefault(
                 cleanup_task_id,
@@ -702,6 +703,7 @@ class FakeCursor:
                     created_at,
                     updated_at,
                     completed_at,
+                    last_error,
                 ),
             )
         elif statement.startswith("select cleanup_task_id"):

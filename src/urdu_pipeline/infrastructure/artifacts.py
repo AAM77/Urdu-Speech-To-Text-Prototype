@@ -50,19 +50,27 @@ class ObjectStoreArtifactRepository:
             sort_keys=True,
             default=str,
         ).encode("utf-8")
-        self.object_store.put_stream(
-            json_key,
-            BytesIO(json_payload),
-            metadata=ObjectMetadata(content_type="application/json"),
-        )
-
+        written_keys: list[str] = []
         has_markdown = markdown is not None
-        if markdown is not None:
+        try:
             self.object_store.put_stream(
-                _markdown_key(artifact_id),
-                BytesIO(markdown.encode("utf-8")),
-                metadata=ObjectMetadata(content_type="text/markdown; charset=utf-8"),
+                json_key,
+                BytesIO(json_payload),
+                metadata=ObjectMetadata(content_type="application/json"),
             )
+            written_keys.append(json_key)
+
+            if markdown is not None:
+                markdown_key = _markdown_key(artifact_id)
+                self.object_store.put_stream(
+                    markdown_key,
+                    BytesIO(markdown.encode("utf-8")),
+                    metadata=ObjectMetadata(content_type="text/markdown; charset=utf-8"),
+                )
+                written_keys.append(markdown_key)
+        except Exception:
+            _delete_written_objects(self.object_store, written_keys)
+            raise
 
         record = ArtifactRecord(
             user_id=user_id,
@@ -79,7 +87,14 @@ class ObjectStoreArtifactRepository:
                 object_key=json_key,
             )
         except TypeError:
-            self.metadata_store.record_artifact(record)
+            try:
+                self.metadata_store.record_artifact(record)
+            except Exception:
+                _delete_written_objects(self.object_store, written_keys)
+                raise
+        except Exception:
+            _delete_written_objects(self.object_store, written_keys)
+            raise
 
         self._persist_document_chunk(
             user_id=user_id,
@@ -199,6 +214,14 @@ def _document_text(payload: Mapping[str, Any], markdown: str | None) -> str:
     if markdown:
         return markdown
     return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _delete_written_objects(object_store: ObjectStore, keys: Sequence[str]) -> None:
+    for key in reversed(list(keys)):
+        try:
+            object_store.delete_object(key)
+        except Exception:
+            pass
 
 
 __all__ = ["ObjectStoreArtifactRepository"]

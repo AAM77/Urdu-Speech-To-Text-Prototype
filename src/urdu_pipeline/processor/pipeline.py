@@ -41,8 +41,10 @@ from urdu_pipeline.application.ports.services import (
 )
 from urdu_pipeline.application.ports.storage import ArtifactReference, ArtifactRepository
 from urdu_pipeline.domain import ArtifactId, ArtifactStage, ArtifactType, ProviderRunId
+from urdu_pipeline.logging_utils import redact_event_message
 from urdu_pipeline.processor.idempotency import find_stage_artifact, stage_usage_key
-from urdu_pipeline.processor.lifecycle import FatalJobError
+from urdu_pipeline.processor.lifecycle import FatalJobError, TransientJobError
+from urdu_pipeline.providers.base import ProviderFatalError, ProviderTransientError
 from urdu_pipeline.schemas.articles import ArticleArtifact
 from urdu_pipeline.schemas.transcripts import ReconciledTranscriptArtifact
 from urdu_pipeline.schemas.translations import EnglishTranslationArtifact
@@ -154,7 +156,11 @@ def run_translation_and_article(
 
     _enforce_budget(job_record, budget_service, stage="translation")
 
-    translation_artifact, translation_usage = translator_fn(reconciled_artifact)
+    translation_artifact, translation_usage = _call_provider_stage(
+        "translation",
+        translator_fn,
+        reconciled_artifact,
+    )
 
     _record_stage_usage(
         job_record, usage_ledger, translation_usage,
@@ -173,7 +179,11 @@ def run_translation_and_article(
 
     _enforce_budget(job_record, budget_service, stage="article generation")
 
-    article_artifact, article_usage = article_fn(translation_artifact)
+    article_artifact, article_usage = _call_provider_stage(
+        "article_generation",
+        article_fn,
+        translation_artifact,
+    )
 
     _record_stage_usage(
         job_record, usage_ledger, article_usage,
@@ -191,6 +201,37 @@ def run_translation_and_article(
     )
 
     return translation_ref, article_ref
+
+
+def _call_provider_stage(stage: str, fn: Callable[[Any], Any], value: Any) -> Any:
+    try:
+        return fn(value)
+    except ProviderTransientError as exc:
+        raise TransientJobError(
+            _provider_failure_message(
+                stage,
+                exc,
+                fallback="provider transient failure",
+            )
+        ) from exc
+    except ProviderFatalError as exc:
+        raise FatalJobError(
+            _provider_failure_message(
+                stage,
+                exc,
+                fallback="provider fatal failure",
+            )
+        ) from exc
+
+
+def _provider_failure_message(
+    stage: str,
+    exc: Exception,
+    *,
+    fallback: str,
+) -> str:
+    safe_detail = redact_event_message(str(exc), fallback=type(exc).__name__)
+    return f"{fallback} during {stage}: {safe_detail}"
 
 
 __all__ = ["run_translation_and_article"]

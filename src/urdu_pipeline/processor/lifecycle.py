@@ -35,6 +35,7 @@ from urdu_pipeline.domain import (
     RunStatus,
     ServiceIdentityId,
 )
+from urdu_pipeline.logging_utils import redact_event_message
 
 _DEFAULT_LEASE_SECONDS: int = 30
 _DEFAULT_MAX_ATTEMPTS: int = 3
@@ -126,42 +127,79 @@ def claim_and_run(
         return True
 
     # Transition to RUNNING before invoking the handler so that any inspection
-    # of MetadataStore during execution sees the correct state.
-    metadata_store.update_job(replace(job, status=JobStatus.RUNNING))
+    # of MetadataStore during execution sees the correct state. If metadata is
+    # unavailable, release the lease for another attempt and propagate the
+    # outage to the caller.
+    run = None
+    try:
+        metadata_store.update_job(replace(job, status=JobStatus.RUNNING))
 
-    run = metadata_store.get_run(user_id=job.user_id, run_id=job.run_id)
-    if run is not None and run.status not in (
-        RunStatus.FAILED,
-        RunStatus.CANCELLED,
-    ):
-        metadata_store.update_run(replace(run, status=RunStatus.RUNNING))
+        run = metadata_store.get_run(user_id=job.user_id, run_id=job.run_id)
+        if run is not None and run.status not in (
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+        ):
+            metadata_store.update_run(replace(run, status=RunStatus.RUNNING))
+    except Exception as exc:
+        _retry_after_lifecycle_setup_failure(queue, lease, exc)
+        raise
 
     try:
         handler(lease, metadata_store)
     except TransientJobError as exc:
         if lease.attempt_number >= max_attempts:
+            queue.dead_letter(
+                lease,
+                reason=_safe_reason(
+                    f"max_attempts={max_attempts} exceeded: {exc}",
+                    fallback=f"max_attempts={max_attempts} exceeded",
+                ),
+            )
             metadata_store.update_job(replace(job, status=JobStatus.FAILED))
             if run is not None:
                 metadata_store.update_run(replace(run, status=RunStatus.FAILED))
-            queue.dead_letter(
-                lease,
-                reason=f"max_attempts={max_attempts} exceeded: {exc}",
-            )
         else:
+            queue.retry(
+                lease,
+                reason=_safe_reason(str(exc), fallback="transient job failure"),
+            )
             metadata_store.update_job(replace(job, status=JobStatus.QUEUED))
-            queue.retry(lease, reason=str(exc))
         return True
     except Exception as exc:
         # Covers FatalJobError and any unexpected exception — treat as fatal.
+        queue.mark_terminal_failure(
+            lease,
+            reason=_safe_reason(str(exc), fallback=type(exc).__name__),
+        )
         metadata_store.update_job(replace(job, status=JobStatus.FAILED))
         if run is not None:
             metadata_store.update_run(replace(run, status=RunStatus.FAILED))
-        queue.mark_terminal_failure(lease, reason=str(exc))
         return True
 
     # ── Success ───────────────────────────────────────────────────────────────
+    queue.complete(lease)
     metadata_store.update_job(replace(job, status=JobStatus.SUCCEEDED))
     if run is not None:
         metadata_store.update_run(replace(run, status=RunStatus.SUCCEEDED))
-    queue.complete(lease)
     return True
+
+
+def _retry_after_lifecycle_setup_failure(
+    queue: JobQueue,
+    lease: JobLease,
+    exc: Exception,
+) -> None:
+    try:
+        queue.retry(
+            lease,
+            reason=_safe_reason(
+                str(exc),
+                fallback="metadata unavailable before handler",
+            ),
+        )
+    except Exception:
+        pass
+
+
+def _safe_reason(message: str, *, fallback: str) -> str:
+    return redact_event_message(message, fallback=fallback) or fallback
