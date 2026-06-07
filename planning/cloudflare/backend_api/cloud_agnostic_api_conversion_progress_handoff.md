@@ -1,6 +1,6 @@
 # Cloud-Agnostic API Conversion Progress Handoff
 
-Last updated: 2026-06-07 (session 14)
+Last updated: 2026-06-07 (session 15)
 
 This document summarizes what has been completed from
 `cloud_agnostic_api_conversion_stepwise_commit_plan.md`, why each part exists,
@@ -63,17 +63,23 @@ Completed through:
 - Stage 7 Step 7.1.2 (complete)
 - Stage 7 Step 7.1.3 (complete)
 - Stage 7 Step 7.2.1 (complete)
+- Stage 8 Step 8.1.1 (complete)
 
 Next step in the original plan:
 
-- Stage 8: Step 8.1.1 — Verify S3 ObjectStore Adapter Against AWS S3
+- Stage 8: Step 8.1.2 — Verify PostgreSQL Metadata Store Against Managed RDS
 
 Most recent verification:
 
+- Combined unit + safe integration: `854 passed, 4 skipped`
+- Full unit suite: `829 passed`
+- `RUN_S3_OBJECT_STORE_SMOKE=1 make test-integration`: `25 passed, 4 skipped`
+  (`test_s3_object_store_aws.py` skipped because `boto3` is not installed in
+  the current environment; no AWS staging bucket/credentials were configured)
+- Targeted Stage 8.1.1 S3/config/Makefile tests: `39 passed, 1 skipped`
+- Initial Stage 8.1.1 red test run: `7 failed, 32 passed, 1 skipped`
+- `git diff --check`: passed
 - Step 7.2.1 docs-only verification: `git diff --check` passed
-- Combined unit + safe integration: `847 passed, 3 skipped`
-- Full unit suite: `823 passed`
-- Safe integration suite: `24 passed, 3 skipped`
 - Targeted Stage 7.1.3 failure-mode tests: `7 passed`
 - Affected failure/lifecycle/artifact/provider/cleanup/metadata/migration
   tests: `100 passed`
@@ -2616,10 +2622,9 @@ exists.
 
 Remaining phases:
 
-- verify S3 object-store behavior
 - verify PostgreSQL metadata store against managed RDS
 - verify Redis or chosen queue adapter behavior
-- document AWS IAM, networking, and secrets requirements
+- document remaining AWS networking and secrets requirements
 - run controlled fake-provider and real-provider smoke checks
 
 Why needed:
@@ -2630,6 +2635,81 @@ Why needed:
 Needed for provider switch?
 
 - No.
+
+### Step 8.1.1: Verify S3 ObjectStore Adapter Against AWS S3
+
+What was done (strict TDD for behavior/config changes):
+
+- Added AWS/S3-specific unit coverage in `tests/unit/test_s3_object_store.py`:
+  - server-side encryption headers are applied to object writes, presigned
+    upload URLs, and multipart upload creation
+  - KMS key IDs are rejected unless `server_side_encryption='aws:kms'`
+  - boto3 client construction omits static credentials when using IAM role auth
+  - partial static credentials are rejected
+- Added settings coverage in `tests/unit/test_config.py`:
+  - `OBJECT_STORE_SERVER_SIDE_ENCRYPTION=aws:kms`
+  - `OBJECT_STORE_SSE_KMS_KEY_ID`
+  - validation that a KMS key requires the KMS encryption algorithm
+- Added a guarded AWS S3 smoke test:
+  - `tests/integration_safe/test_s3_object_store_aws.py`
+  - runs only when `RUN_S3_OBJECT_STORE_SMOKE=1`
+  - writes, reads, heads, signs, lists, and deletes a random
+    `smoke/aws/<uuid>/` object
+- Added `make test-integration` so the plan's verification command is wired.
+- Confirmed the new tests failed before implementation:
+  - initial targeted run: `7 failed, 32 passed, 1 skipped`
+  - failures covered missing SSE constructor args, missing settings, boto3
+    static-credential behavior, and missing Makefile target.
+- Updated `src/urdu_pipeline/infrastructure/s3.py`:
+  - added optional adapter-local `server_side_encryption` and
+    `sse_kms_key_id` constructor arguments
+  - applies encryption kwargs to `put_object`, presigned `put_object` params,
+    and multipart upload creation
+  - validates supported algorithms (`AES256`, `aws:kms`)
+  - omits `None` boto3 client kwargs so IAM role/default credential resolution
+    is clean
+  - rejects partial static credentials
+- Updated runtime wiring:
+  - `src/urdu_pipeline/config/settings.py` defines and validates the new S3
+    encryption settings
+  - `src/urdu_pipeline/api/runtime.py` passes encryption settings into
+    `S3ObjectStore` and omits empty boto3 client kwargs
+  - `src/urdu_pipeline/processor/runtime.py` passes encryption settings into
+    `S3ObjectStore`
+- Added `docs/aws_s3_object_store.md` documenting:
+  - AWS smoke-test environment variables
+  - IAM role vs static credential guidance
+  - SSE-S3 and SSE-KMS configuration
+  - required S3 and KMS IAM permissions
+  - smoke test cleanup guidance
+- Linked the S3 guide from `docs/operator_guide.md`.
+
+Verification notes:
+
+- Targeted S3/config/Makefile suite now passes: `39 passed, 1 skipped`.
+- `RUN_S3_OBJECT_STORE_SMOKE=1 make test-integration` passes locally with
+  `25 passed, 4 skipped`; the AWS S3 smoke skipped because `boto3` is not
+  installed in the current environment and no staging AWS bucket/credentials
+  are configured.
+- Full local unit plus safe integration suite passes: `854 passed, 4 skipped`.
+- A real AWS staging smoke still needs to be run in an environment with
+  `boto3`, `RUN_S3_OBJECT_STORE_SMOKE=1`, `AWS_S3_OBJECT_STORE_BUCKET`, region,
+  and IAM role or static credentials configured.
+
+Why it was needed:
+
+- AWS S3 production behavior differs from MinIO local parity around credential
+  sourcing and encryption headers.
+- Production deployments should prefer IAM role/default credential resolution
+  over static keys where possible.
+- If the deployment requires bucket-default or request-level encryption, both
+  direct object writes and presigned upload URLs must carry compatible headers.
+
+Provider-switch relevance:
+
+- Not required for local CLI provider switching.
+- Required for the backend/API track before storing user uploads and durable
+  artifacts in AWS S3.
 
 ## Remaining Stage 9: First Production Deployment
 
@@ -2807,7 +2887,7 @@ Give the next AI these files first:
 Tell the next AI explicitly:
 
 - Current state: all local unit and safe integration tests pass
-  (`847 passed, 3 skipped`).
+  (`854 passed, 4 skipped`).
 - Stage 4 COMPLETE. Stage 5 COMPLETE. Stage 6 COMPLETE through Step 6.2.3.
 - **Deployment target: AWS Lightsail** (decided 2026-06-07). Cloudflare is no
   longer the target. The architecture remains cloud-agnostic; only Stage 8
@@ -2818,7 +2898,9 @@ Tell the next AI explicitly:
 - Stage 7 Step 7.1.2 is complete.
 - Stage 7 Step 7.1.3 is complete.
 - Stage 7 Step 7.2.1 is complete.
-- Next step is Stage 8 Step 8.1.1: Verify S3 ObjectStore Adapter Against AWS S3.
+- Stage 8 Step 8.1.1 is complete.
+- Next step is Stage 8 Step 8.1.2: Verify PostgreSQL Metadata Store Against
+  Managed RDS.
 - IMPORTANT: For behavior/code changes, write tests BEFORE implementation
   (strict TDD), run them to confirm they fail, then implement to make them
   pass. For docs-only steps that explicitly say tests are not applicable, do
@@ -2879,7 +2961,11 @@ Track B: continue backend conversion (currently active)
 - **Stage 7 Step 7.2.1 is COMPLETE** (operator guide covering users, token
   revocation, retry, cancellation, cleanup, backups, restore, smoke tests, and
   cost monitoring).
-- Next step: Stage 8 Step 8.1.1 — Verify S3 ObjectStore Adapter Against AWS S3.
+- **Stage 8 Step 8.1.1 is COMPLETE** (AWS S3 smoke test gate, IAM-role
+  credential behavior, optional SSE/KMS support, `make test-integration`, and
+  AWS S3 IAM/smoke documentation).
+- Next step: Stage 8 Step 8.1.2 — Verify PostgreSQL Metadata Store Against
+  Managed RDS.
 - Then continue AWS adapter verification (Stage 8), production deploy (Stage 9).
 
 Track C: stabilize and commit current work

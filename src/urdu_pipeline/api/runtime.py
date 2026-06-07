@@ -22,6 +22,8 @@ def build_app_state_from_settings(settings: Settings | None = None) -> AppState:
     object_store = S3ObjectStore(
         bucket=s.object_store_bucket,
         client=_build_s3_client(s),
+        server_side_encryption=getattr(s, "object_store_server_side_encryption", None),
+        sse_kms_key_id=getattr(s, "object_store_sse_kms_key_id", None),
     )
     job_queue = RedisJobQueue(
         metadata_store=metadata_store,
@@ -45,13 +47,17 @@ def create_runtime_app() -> Any:
 def _build_s3_client(settings: Settings) -> Any:
     import boto3
 
-    return boto3.client(
-        "s3",
-        endpoint_url=settings.object_store_endpoint_url or None,
-        region_name=settings.object_store_region,
-        aws_access_key_id=settings.object_store_access_key or None,
-        aws_secret_access_key=settings.object_store_secret_key or None,
-    )
+    if bool(settings.object_store_access_key) != bool(settings.object_store_secret_key):
+        raise ValueError("S3 static credentials require both access key and secret key.")
+    kwargs: dict[str, Any] = {}
+    if settings.object_store_endpoint_url:
+        kwargs["endpoint_url"] = settings.object_store_endpoint_url
+    if settings.object_store_region:
+        kwargs["region_name"] = settings.object_store_region
+    if settings.object_store_access_key and settings.object_store_secret_key:
+        kwargs["aws_access_key_id"] = settings.object_store_access_key
+        kwargs["aws_secret_access_key"] = settings.object_store_secret_key
+    return boto3.client("s3", **kwargs)
 
 
 def _build_redis_client(settings: Settings) -> Any:

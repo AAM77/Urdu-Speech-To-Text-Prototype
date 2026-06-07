@@ -250,6 +250,8 @@ def _build_object_store(settings: Settings) -> S3ObjectStore:
         region_name=settings.object_store_region,
         aws_access_key_id=settings.object_store_access_key,
         aws_secret_access_key=settings.object_store_secret_key,
+        server_side_encryption=settings.object_store_server_side_encryption,
+        sse_kms_key_id=settings.object_store_sse_kms_key_id,
     )
 
 

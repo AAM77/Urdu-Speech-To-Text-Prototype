@@ -39,7 +39,7 @@ PAID_FLAG = $(if $(filter 1 true TRUE yes YES y Y,$(CONFIRM_PAID_RUN)),--confirm
 CHUNK_LENGTH_FLAG = $(if $(strip $(CHUNK_LENGTH_SECONDS)),--chunk-length-seconds $(CHUNK_LENGTH_SECONDS),)
 OVERLAP_FLAG = $(if $(strip $(OVERLAP_SECONDS)),--overlap-seconds $(OVERLAP_SECONDS),)
 
-.PHONY: help latest-run chunk transcribe reconcile translate article to-transcribe to-reconcile to-translate to-article migrate-db api-dev processor-dev compose-up compose-down compose-test compose-fake-provider-e2e compose-setup compose-migrate compose-seed-user compose-seed-service-identity compose-seed-provider-config compose-seed-bucket
+.PHONY: help latest-run chunk transcribe reconcile translate article to-transcribe to-reconcile to-translate to-article migrate-db api-dev processor-dev test-integration compose-up compose-down compose-test compose-fake-provider-e2e compose-setup compose-migrate compose-seed-user compose-seed-service-identity compose-seed-provider-config compose-seed-bucket
 
 REQUIRE_AUDIO = if [[ -z "$(AUDIO)" ]]; then echo "AUDIO is required. Example: make $@ AUDIO='inputs/example.mp3'"; exit 1; fi
 RESOLVE_RUN_DIR = run_dir="$(RUN_DIR)"; if [[ -z "$$run_dir" ]]; then run_dir="$$(ls -td "$(RUNS_DIR)"/* 2>/dev/null | head -n1 || true)"; fi; if [[ -z "$$run_dir" ]]; then echo "No run directory found under $(RUNS_DIR). Pass RUN_DIR=... or create one with: make chunk AUDIO='inputs/example.mp3'"; exit 1; fi; echo "Using run directory: $$run_dir"
@@ -74,6 +74,7 @@ help:
 		'  make migrate-db            run PostgreSQL metadata migrations' \
 		'  make api-dev               run the FastAPI app locally' \
 		'  make processor-dev         validate/run the processor command locally' \
+		'  make test-integration      run safe integration tests' \
 		'  make compose-up            build and start the local parity stack' \
 		'  make compose-down          stop the local parity stack' \
 		'  make compose-setup         run compose-up plus local setup commands' \
@@ -152,6 +153,9 @@ api-dev:
 
 processor-dev:
 	set -euo pipefail; SERVICE_AUTH_TOKEN="$(SERVICE_AUTH_TOKEN)" $(CLI) process --api-url "$(PROCESSOR_API_URL)"
+
+test-integration:
+	set -euo pipefail; $(PYTHON) -m pytest tests/integration_safe
 
 chunk:
 	set -euo pipefail; $(REQUIRE_AUDIO); $(CLI) chunk --audio "$(AUDIO)" $(CHUNK_LENGTH_FLAG) $(OVERLAP_FLAG)

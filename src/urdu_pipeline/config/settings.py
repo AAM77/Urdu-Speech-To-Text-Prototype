@@ -80,6 +80,8 @@ class Settings(BaseSettings):
     object_store_region: str = Field(default="us-east-1")
     object_store_access_key: str | None = Field(default=None)
     object_store_secret_key: str | None = Field(default=None)
+    object_store_server_side_encryption: str | None = Field(default=None)
+    object_store_sse_kms_key_id: str | None = Field(default=None)
 
     # ---- Job queue ----
     redis_url: str = Field(default="redis://localhost:6379/0")
@@ -105,6 +107,29 @@ class Settings(BaseSettings):
                 f"HARD_CAP_USD ({v}) must be >= DEFAULT_BUDGET_USD ({default})."
             )
         return v
+
+    @field_validator("object_store_server_side_encryption")
+    @classmethod
+    def _object_store_sse_algorithm_supported(cls, value: str | None) -> str | None:
+        if value in (None, ""):
+            return None
+        if value not in {"AES256", "aws:kms"}:
+            raise ValueError(
+                "OBJECT_STORE_SERVER_SIDE_ENCRYPTION must be 'AES256' or 'aws:kms'."
+            )
+        return value
+
+    @field_validator("object_store_sse_kms_key_id")
+    @classmethod
+    def _object_store_kms_requires_kms_algorithm(cls, value: str | None, info) -> str | None:
+        if value in (None, ""):
+            return None
+        if info.data.get("object_store_server_side_encryption") != "aws:kms":
+            raise ValueError(
+                "OBJECT_STORE_SSE_KMS_KEY_ID requires "
+                "OBJECT_STORE_SERVER_SIDE_ENCRYPTION=aws:kms."
+            )
+        return value
 
     @property
     def project_root(self) -> Path:

@@ -60,10 +60,16 @@ class S3ObjectStore:
         region_name: str | None = None,
         aws_access_key_id: str | None = None,
         aws_secret_access_key: str | None = None,
+        server_side_encryption: str | None = None,
+        sse_kms_key_id: str | None = None,
     ) -> None:
         if not bucket:
             raise ValueError("bucket must be non-empty.")
         self.bucket = bucket
+        self._encryption_kwargs = _encryption_kwargs(
+            server_side_encryption=server_side_encryption,
+            sse_kms_key_id=sse_kms_key_id,
+        )
         self.client = client or _build_boto3_client(
             endpoint_url=endpoint_url,
             region_name=region_name,
@@ -85,6 +91,7 @@ class S3ObjectStore:
             "Body": body,
         }
         kwargs.update(_metadata_to_put_kwargs(metadata))
+        kwargs.update(self._encryption_kwargs)
         response = self.client.put_object(**kwargs) or {}
         info = self.head_object(safe_key)
         if info.etag is None and response.get("ETag") is not None:
@@ -123,6 +130,7 @@ class S3ObjectStore:
         safe_key = _validate_object_key(key)
         params: dict[str, Any] = {"Bucket": self.bucket, "Key": safe_key}
         params.update(_metadata_to_presign_params(metadata))
+        params.update(self._encryption_kwargs)
         seconds = _expires_seconds(expires_in)
         url = self.client.generate_presigned_url(
             "put_object",
@@ -209,6 +217,7 @@ class S3ObjectStore:
         safe_key = _validate_object_key(key)
         kwargs: dict[str, Any] = {"Bucket": self.bucket, "Key": safe_key}
         kwargs.update(_metadata_to_put_kwargs(metadata))
+        kwargs.update(self._encryption_kwargs)
         response = self.client.create_multipart_upload(**kwargs)
         return MultipartUpload(key=safe_key, upload_id=response["UploadId"])
 
@@ -287,6 +296,8 @@ def _build_boto3_client(
     aws_access_key_id: str | None,
     aws_secret_access_key: str | None,
 ) -> Any:
+    if bool(aws_access_key_id) != bool(aws_secret_access_key):
+        raise ValueError("S3 static credentials require both access key and secret key.")
     try:
         import boto3
     except ModuleNotFoundError as exc:
@@ -294,13 +305,32 @@ def _build_boto3_client(
             "boto3 is required for S3ObjectStore. "
             "Install the object-store extra, for example: pip install -e '.[object-store]'."
         ) from exc
-    return boto3.client(
-        "s3",
-        endpoint_url=endpoint_url,
-        region_name=region_name,
-        aws_access_key_id=aws_access_key_id,
-        aws_secret_access_key=aws_secret_access_key,
-    )
+    kwargs: dict[str, Any] = {}
+    if endpoint_url:
+        kwargs["endpoint_url"] = endpoint_url
+    if region_name:
+        kwargs["region_name"] = region_name
+    if aws_access_key_id and aws_secret_access_key:
+        kwargs["aws_access_key_id"] = aws_access_key_id
+        kwargs["aws_secret_access_key"] = aws_secret_access_key
+    return boto3.client("s3", **kwargs)
+
+
+def _encryption_kwargs(
+    *,
+    server_side_encryption: str | None,
+    sse_kms_key_id: str | None,
+) -> dict[str, str]:
+    if not server_side_encryption and not sse_kms_key_id:
+        return {}
+    if server_side_encryption not in {"AES256", "aws:kms"}:
+        raise ValueError("server_side_encryption must be 'AES256' or 'aws:kms'.")
+    if sse_kms_key_id and server_side_encryption != "aws:kms":
+        raise ValueError("SSEKMSKeyId requires server_side_encryption='aws:kms'.")
+    kwargs = {"ServerSideEncryption": server_side_encryption}
+    if sse_kms_key_id:
+        kwargs["SSEKMSKeyId"] = sse_kms_key_id
+    return kwargs
 
 
 def _metadata_to_put_kwargs(metadata: ObjectMetadata | None) -> dict[str, Any]:

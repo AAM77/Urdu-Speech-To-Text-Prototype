@@ -291,6 +291,7 @@ def test_single_stage_target_reports_missing_prerequisite(make_env):
         ("compose-up", ["docker compose", "--env-file .env.local.example", "up --build -d"]),
         ("compose-down", ["docker compose", "--env-file .env.local.example", "down"]),
         ("compose-test", ["docker compose", "config", "up --build -d", "ps"]),
+        ("test-integration", ["pytest", "tests/integration_safe"]),
     ],
 )
 def test_local_stack_runtime_targets_are_wired_for_dry_run(

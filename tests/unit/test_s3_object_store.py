@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import sys
+from types import SimpleNamespace
 from datetime import timedelta
 from typing import Any
 
@@ -28,9 +30,12 @@ class FakeS3Client:
     def __init__(self) -> None:
         self.objects: dict[tuple[str, str], dict[str, Any]] = {}
         self.multipart: dict[str, dict[str, Any]] = {}
+        self.put_calls: list[dict[str, Any]] = []
+        self.multipart_calls: list[dict[str, Any]] = []
         self.presigned_calls: list[tuple[str, dict[str, Any], int, str | None]] = []
 
     def put_object(self, **kwargs: Any) -> dict[str, str]:
+        self.put_calls.append(dict(kwargs))
         bucket = kwargs["Bucket"]
         key = kwargs["Key"]
         payload = kwargs["Body"].read()
@@ -85,6 +90,7 @@ class FakeS3Client:
         return f"https://objects.example/{operation_name}/{Params['Key']}"
 
     def create_multipart_upload(self, **kwargs: Any) -> dict[str, str]:
+        self.multipart_calls.append(dict(kwargs))
         upload_id = f"upload-{len(self.multipart) + 1}"
         self.multipart[upload_id] = {
             "bucket": kwargs["Bucket"],
@@ -208,6 +214,75 @@ def test_s3_object_store_multipart_lifecycle():
     assert completed.content_type == "audio/mpeg"
     assert completed.checksum_sha256 == "b" * 64
     assert "upload-2" not in client.multipart
+
+
+def test_s3_object_store_supports_aws_server_side_encryption_headers():
+    client = FakeS3Client()
+    store = S3ObjectStore(
+        bucket="bucket",
+        client=client,
+        server_side_encryption="aws:kms",
+        sse_kms_key_id="arn:aws:kms:us-east-1:123456789012:key/test",
+    )
+
+    store.put_stream("artifacts/art_1.json", io.BytesIO(b"{}"))
+    store.create_signed_upload_url(
+        "uploads/upl_1",
+        expires_in=timedelta(minutes=10),
+    )
+    store.create_multipart_upload("tmp/users/usr_1/runs/run_1/chunk.wav")
+
+    assert client.put_calls[-1]["ServerSideEncryption"] == "aws:kms"
+    assert client.put_calls[-1]["SSEKMSKeyId"] == "arn:aws:kms:us-east-1:123456789012:key/test"
+    assert client.presigned_calls[-1][1]["ServerSideEncryption"] == "aws:kms"
+    assert client.presigned_calls[-1][1]["SSEKMSKeyId"] == "arn:aws:kms:us-east-1:123456789012:key/test"
+    assert client.multipart_calls[-1]["ServerSideEncryption"] == "aws:kms"
+    assert client.multipart_calls[-1]["SSEKMSKeyId"] == "arn:aws:kms:us-east-1:123456789012:key/test"
+
+
+def test_s3_object_store_rejects_kms_key_without_kms_encryption():
+    with pytest.raises(ValueError, match="SSEKMSKeyId"):
+        S3ObjectStore(
+            bucket="bucket",
+            client=FakeS3Client(),
+            server_side_encryption="AES256",
+            sse_kms_key_id="arn:aws:kms:us-east-1:123456789012:key/test",
+        )
+
+
+def test_build_boto3_client_omits_static_credentials_for_iam_role(monkeypatch):
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def fake_client(service_name: str, **kwargs: Any) -> object:
+        calls.append((service_name, kwargs))
+        return object()
+
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=fake_client))
+
+    from urdu_pipeline.infrastructure import s3
+
+    s3._build_boto3_client(
+        endpoint_url=None,
+        region_name="us-east-1",
+        aws_access_key_id=None,
+        aws_secret_access_key=None,
+    )
+
+    assert calls == [("s3", {"region_name": "us-east-1"})]
+
+
+def test_build_boto3_client_rejects_partial_static_credentials(monkeypatch):
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda *args, **kwargs: object()))
+
+    from urdu_pipeline.infrastructure import s3
+
+    with pytest.raises(ValueError, match="both access key and secret key"):
+        s3._build_boto3_client(
+            endpoint_url=None,
+            region_name="us-east-1",
+            aws_access_key_id="access",
+            aws_secret_access_key=None,
+        )
 
 
 def test_s3_object_store_rejects_missing_or_traversal_keys():

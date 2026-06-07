@@ -217,8 +217,12 @@ environment flags:
 - `RUN_POSTGRES_MIGRATION_SMOKE=1`
 - `RUN_REDIS_JOB_QUEUE_SMOKE=1`
 - `RUN_MINIO_OBJECT_STORE_SMOKE=1`
+- `RUN_S3_OBJECT_STORE_SMOKE=1`
 
 Run them only against disposable local or staging resources.
+
+For AWS S3-specific setup, IAM, encryption, and smoke-test details, see
+`docs/aws_s3_object_store.md`.
 
 ## Cost Monitoring
 

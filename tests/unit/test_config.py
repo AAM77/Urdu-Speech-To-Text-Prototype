@@ -66,3 +66,29 @@ def test_accepted_audio_extensions_are_configurable(monkeypatch):
 def test_default_accepted_includes_mp3():
     s = get_settings()
     assert "mp3" in s.accepted_audio_extensions_set
+
+
+def test_object_store_sse_settings_support_kms(monkeypatch):
+    monkeypatch.setenv("OBJECT_STORE_SERVER_SIDE_ENCRYPTION", "aws:kms")
+    monkeypatch.setenv(
+        "OBJECT_STORE_SSE_KMS_KEY_ID",
+        "arn:aws:kms:us-east-1:123456789012:key/test",
+    )
+    reset_settings_cache()
+
+    s = get_settings()
+
+    assert s.object_store_server_side_encryption == "aws:kms"
+    assert s.object_store_sse_kms_key_id == "arn:aws:kms:us-east-1:123456789012:key/test"
+
+
+def test_object_store_kms_key_requires_kms_sse_algorithm(monkeypatch):
+    monkeypatch.setenv("OBJECT_STORE_SERVER_SIDE_ENCRYPTION", "AES256")
+    monkeypatch.setenv(
+        "OBJECT_STORE_SSE_KMS_KEY_ID",
+        "arn:aws:kms:us-east-1:123456789012:key/test",
+    )
+    reset_settings_cache()
+
+    with pytest.raises(Exception, match="OBJECT_STORE_SSE_KMS_KEY_ID"):
+        get_settings()
