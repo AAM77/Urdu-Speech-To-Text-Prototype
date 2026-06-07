@@ -9,6 +9,7 @@ from urdu_pipeline.api.dependencies import AppState
 from urdu_pipeline.api.routes.auth import router as auth_router
 from urdu_pipeline.api.routes.health import router as health_router
 from urdu_pipeline.api.routes.tokens import router as tokens_router
+from urdu_pipeline.api.routes.runs import router as runs_router
 from urdu_pipeline.api.routes.uploads import router as uploads_router
 
 
@@ -54,6 +55,7 @@ def create_app(
     app.include_router(auth_router)
     app.include_router(tokens_router)
     app.include_router(uploads_router)
+    app.include_router(runs_router)
 
     return app
 

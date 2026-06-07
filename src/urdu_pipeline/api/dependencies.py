@@ -9,6 +9,7 @@ from fastapi import Cookie, Depends, HTTPException, Request, status
 
 from urdu_pipeline.application.ports import (
     CacheStore,
+    JobQueue,
     MetadataStore,
     ObjectStore,
     SecretProvider,
@@ -33,6 +34,9 @@ class AppState:
 
     ``login_rate_limiter`` defaults to 10 requests per 60 seconds.  Tests can
     inject an ``InMemoryRateLimiter`` with a low limit to verify 429 behavior.
+
+    ``job_queue`` is optional.  When ``None``, run creation succeeds but no
+    job is enqueued.  Production deployments must supply a real queue adapter.
     """
 
     metadata_store: MetadataStore
@@ -43,6 +47,7 @@ class AppState:
     login_rate_limiter: RateLimiter = field(
         default_factory=lambda: InMemoryRateLimiter(limit=10, window_seconds=60)
     )
+    job_queue: JobQueue | None = None
 
 
 def get_app_state(request: Request) -> AppState:
@@ -60,6 +65,12 @@ def get_object_store(
     state: Annotated[AppState, Depends(get_app_state)],
 ) -> ObjectStore:
     return state.object_store
+
+
+def get_job_queue(
+    state: Annotated[AppState, Depends(get_app_state)],
+) -> JobQueue | None:
+    return state.job_queue
 
 
 def get_cache_store(
@@ -161,6 +172,7 @@ __all__ = [
     "check_login_rate_limit",
     "get_app_state",
     "get_cache_store",
+    "get_job_queue",
     "get_login_rate_limiter",
     "get_metadata_store",
     "get_object_store",

@@ -364,6 +364,11 @@ class InMemoryMetadataStore:
             return None
         return record
 
+    def update_run(self, record: RunRecord) -> None:
+        if record.run_id not in self._runs:
+            raise KeyError(f"Run not found: {record.run_id}")
+        self._runs[record.run_id] = record
+
     def list_runs(self, *, user_id: UserId) -> Sequence[RunRecord]:
         return sorted(
             (record for record in self._runs.values() if record.user_id == user_id),

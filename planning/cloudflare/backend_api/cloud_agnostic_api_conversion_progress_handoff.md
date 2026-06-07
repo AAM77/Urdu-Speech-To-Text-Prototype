@@ -56,15 +56,15 @@ Completed through:
 - Stage 1
 - Stage 2
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
-- Stage 4 through Step 4.3.2
+- Stage 4 through Step 4.3.3
 
 Next step in the original plan:
 
-- Step 4.3.3: Add Run Routes
+- Step 4.3.4: Add Artifact Routes
 
 Most recent verification:
 
-- Combined unit + safe integration: `551 passed, 3 skipped`
+- Combined unit + safe integration: `586 passed, 3 skipped`
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -1149,6 +1149,57 @@ Provider-switch relevance:
 
 - Not required for CLI provider switching.
 
+### Step 4.3.3: Add Run Routes
+
+What was done (strict TDD — tests written and confirmed failing before implementation):
+
+- Extended `RunRecord` in `src/urdu_pipeline/application/ports/services.py`:
+  - Added `upload_id: UploadId | None = None` — tracks which upload this run processes.
+  - Added `description: str | None = None` — user-supplied label, echoed in responses.
+- Added `update_run(record: RunRecord) -> None` to the `MetadataStore` protocol.
+- Implemented `update_run` in `InMemoryMetadataStore` (raises `KeyError` for unknown run IDs).
+- Extended `AppState` in `src/urdu_pipeline/api/dependencies.py`:
+  - Added `job_queue: JobQueue | None = None` — optional; existing tests do not need a queue.
+  - Added `get_job_queue` dependency.
+  - Imported `JobQueue` from `application.ports`.
+- Created `src/urdu_pipeline/api/routes/runs.py` with five routes:
+  - `POST /runs` — validates upload ownership and status (must be COMPLETED → 422 otherwise),
+    creates `RunRecord(status=PENDING)`, creates `JobRecord(status=QUEUED)`, enqueues a
+    `QueueMessage` if a `JobQueue` is configured. Returns `RunResponse` with no user_id or job_id.
+  - `GET /runs` — lists all runs owned by the caller; returns `RunListResponse(runs, total)`.
+  - `GET /runs/{run_id}` — ownership-checked run lookup; 404 for unknown/other-user.
+  - `GET /runs/{run_id}/events` — ownership-checked; returns `EventListResponse(events=[])` (event
+    persistence is Stage 5 work — this is a deliberate stub).
+  - `POST /runs/{run_id}/cancel` — ownership-checked; transitions status to CANCELLED via
+    `update_run`; returns `CancelRunResponse(run_id, status)`. Requires CSRF.
+- Wired `runs_router` into `src/urdu_pipeline/api/app.py`.
+- Wrote `tests/unit/test_run_routes.py` (35 tests) BEFORE implementation:
+  - Confirmed all 35 tests failed at the start (`AppState` rejected `job_queue` kwarg).
+  - Create: auth, CSRF, bearer bypass, returns run_id/upload_id/status/description, no
+    user_id or job_id, unknown upload → 404, other user's upload → 404,
+    non-completed upload → 422, unknown field → 422, queue enqueue verified via
+    `len(job_queue._queued) == 1`.
+  - List: auth, empty list, lists caller's runs, excludes other users' runs.
+  - Get: auth, 200/404 for own/unknown/other-user, no user_id or job_id in response.
+  - Events: auth, returns 200 with `events` list, 404 for unknown/other-user run.
+  - Cancel: auth, CSRF, 200, status=cancelled, 404 for unknown/other-user.
+- Test count: 586 passed, 3 skipped.
+
+Why it was needed:
+
+- Runs are the central resource in the pipeline: every audio file must be processed through a
+  run before artifacts are produced.
+- Enforcing COMPLETED upload status at run-creation time prevents the processor from receiving
+  jobs with unavailable input data.
+- Queueing the job immediately on run creation decouples the API from the processor: the
+  processor can scale independently and pick up jobs via the queue.
+- The events stub endpoint fulfils the API contract so clients can poll for progress without
+  requiring Stage 5 to be complete first.
+
+Provider-switch relevance:
+
+- Not required for CLI provider switching.
+
 ### Step 4.3.2: Add Multipart And Direct Upload Routes
 
 What was done (strict TDD — tests written and confirmed failing before implementation):
@@ -1508,9 +1559,9 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- Current state: all unit and safe integration tests pass (551 passed, 3 skipped).
+- Current state: all unit and safe integration tests pass (586 passed, 3 skipped).
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 4.3.3: Add Run Routes.
+- Next step is Step 4.3.4: Add Artifact Routes.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
@@ -1531,8 +1582,8 @@ Track A: switch AI provider now
 
 Track B: continue backend conversion (currently active)
 
-- Next step: Step 4.3.3 — Add Run Routes.
-- Then artifact/event routes (4.3.4), OpenAPI review (4.3.5).
+- Next step: Step 4.3.4 — Add Artifact Routes.
+- Then OpenAPI review (4.3.5).
 - Then processor (Stage 5) and local parity stack (Stage 6).
 
 Track C: stabilize and commit current work

@@ -69,6 +69,8 @@ class RunRecord:
     user_id: UserId
     run_id: RunId
     status: RunStatus
+    upload_id: UploadId | None = None
+    description: str | None = None
     provider_config_version_id: ProviderConfigVersionId | None = None
     created_at: datetime = field(default_factory=_utcnow)
 
@@ -262,6 +264,8 @@ class MetadataStore(Protocol):
     def create_run(self, record: RunRecord) -> None: ...
 
     def get_run(self, *, user_id: UserId, run_id: RunId) -> RunRecord | None: ...
+
+    def update_run(self, record: RunRecord) -> None: ...
 
     def list_runs(self, *, user_id: UserId) -> Sequence[RunRecord]: ...
 
