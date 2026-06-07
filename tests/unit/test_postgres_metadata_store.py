@@ -8,16 +8,27 @@ from typing import Any
 import pytest
 
 from urdu_pipeline.application.ports import (
+    ArtifactRecord,
+    CacheScope,
     JobRecord,
+    ProviderConfigSnapshot,
     RunRecord,
     ServiceIdentityRecord,
     UploadRecord,
     UserRecord,
+    UsageRecord,
 )
 from urdu_pipeline.domain import (
+    ArtifactId,
     ArtifactStage,
+    ArtifactType,
+    CleanupTaskId,
+    CleanupTaskStatus,
     JobId,
     JobStatus,
+    ProviderConfigStatus,
+    ProviderConfigVersionId,
+    ProviderRunId,
     RunId,
     RunStatus,
     ServiceIdentityId,
@@ -27,7 +38,13 @@ from urdu_pipeline.domain import (
     UserId,
     UserStatus,
 )
-from urdu_pipeline.infrastructure.db.metadata import PostgresMetadataStore
+from urdu_pipeline.infrastructure.db.metadata import (
+    ArtifactDocumentChunkRecord,
+    CleanupTaskRecord,
+    PostgresMetadataStore,
+    PromptVersionRecord,
+    StageEventRecord,
+)
 
 
 class FakeCursor:
@@ -252,6 +269,213 @@ class FakeCursor:
                 attempt["status"] = status
                 attempt["completed_at"] = completed_at
                 attempt["error_message"] = reason
+        elif statement.startswith("insert into artifacts"):
+            assert params is not None
+            user_id, run_id, job_id, artifact_id, stage, artifact_type, object_key, created_at = params
+            self.connection.artifacts[artifact_id] = {
+                "user_id": user_id,
+                "run_id": run_id,
+                "job_id": job_id,
+                "artifact_id": artifact_id,
+                "stage": stage,
+                "artifact_type": artifact_type,
+                "object_key": object_key,
+                "created_at": created_at,
+            }
+        elif statement.startswith("select user_id, run_id, artifact_id"):
+            assert params is not None
+            user_id, artifact_id = params
+            artifact = self.connection.artifacts.get(artifact_id)
+            self._row = (
+                (
+                    artifact["user_id"],
+                    artifact["run_id"],
+                    artifact["artifact_id"],
+                    artifact["stage"],
+                    artifact["artifact_type"],
+                    artifact["created_at"],
+                )
+                if artifact is not None and artifact["user_id"] == user_id
+                else None
+            )
+        elif statement.startswith("insert into artifact_document_chunks"):
+            assert params is not None
+            artifact_id, chunk_index, user_id, run_id, text_content, token_count, metadata, created_at = params
+            self.connection.document_chunks[(artifact_id, chunk_index)] = (
+                artifact_id,
+                chunk_index,
+                user_id,
+                run_id,
+                text_content,
+                token_count,
+                metadata,
+                created_at,
+            )
+        elif statement.startswith("select artifact_id, chunk_index"):
+            assert params is not None
+            (artifact_id,) = params
+            self._rows = [
+                row
+                for (stored_artifact_id, _chunk_index), row in sorted(
+                    self.connection.document_chunks.items(),
+                    key=lambda item: item[0][1],
+                )
+                if stored_artifact_id == artifact_id
+            ]
+        elif statement.startswith("insert into stage_events"):
+            assert params is not None
+            event_id, user_id, run_id, job_id, stage, event_type, severity, message, payload, created_at = params
+            self.connection.stage_events.append(
+                (event_id, user_id, run_id, job_id, stage, event_type, severity, message, payload, created_at)
+            )
+        elif statement.startswith("select stage_event_id"):
+            assert params is not None
+            user_id, run_id = params
+            self._rows = [
+                row
+                for row in self.connection.stage_events
+                if row[1] == user_id and row[2] == run_id
+            ]
+        elif statement.startswith("insert into provider_config_versions"):
+            assert params is not None
+            config_version_id, status, provider_name, created_at = params
+            self.connection.provider_configs[config_version_id] = (
+                config_version_id,
+                status,
+                provider_name,
+                created_at,
+            )
+        elif statement.startswith("insert into provider_config_entries"):
+            assert params is not None
+            config_version_id, role, model_id, prompt_version = params
+            self.connection.provider_config_entries[(config_version_id, role)] = (
+                config_version_id,
+                role,
+                model_id,
+                prompt_version,
+            )
+        elif statement.startswith("select config_version_id, status, provider_name") and "where status = 'active'" in statement:
+            active = [
+                row
+                for row in self.connection.provider_configs.values()
+                if row[1] == "active"
+            ]
+            self._row = active[-1] if active else None
+        elif statement.startswith("select config_version_id, status, provider_name"):
+            assert params is not None
+            self._row = self.connection.provider_configs.get(params[0])
+        elif statement.startswith("select role, model_id, prompt_version"):
+            assert params is not None
+            (config_version_id,) = params
+            self._rows = [
+                (role, model_id, prompt_version)
+                for stored_config_id, role, model_id, prompt_version in self.connection.provider_config_entries.values()
+                if stored_config_id == config_version_id
+            ]
+        elif statement.startswith("insert into prompt_versions"):
+            assert params is not None
+            self.connection.prompts[(params[1], params[2])] = params
+        elif statement.startswith("select prompt_version_id"):
+            assert params is not None
+            prompt_id, prompt_version = params
+            self._row = self.connection.prompts.get((prompt_id, prompt_version))
+        elif statement.startswith("insert into provider_runs"):
+            assert params is not None
+            provider_run_id, user_id, run_id, job_id, provider_name, model_id, started_at, raw_usage = params
+            self.connection.provider_runs[provider_run_id] = (
+                provider_run_id,
+                user_id,
+                run_id,
+                job_id,
+                provider_name,
+                model_id,
+                started_at,
+                raw_usage,
+            )
+        elif statement.startswith("insert into usage_ledger"):
+            assert params is not None
+            usage_ledger_id, provider_run_id, user_id, run_id, job_id, provider_name, model_id, cost_usd, usage, created_at = params
+            self.connection.usage_ledger[provider_run_id] = (
+                usage_ledger_id,
+                provider_run_id,
+                user_id,
+                run_id,
+                job_id,
+                provider_name,
+                model_id,
+                float(cost_usd),
+                usage,
+                created_at,
+            )
+        elif statement.startswith("update usage_ledger"):
+            assert params is not None
+            usage, provider_run_id = params
+            row = self.connection.usage_ledger.get(provider_run_id)
+            if row is not None:
+                self.connection.usage_ledger[provider_run_id] = (
+                    row[0],
+                    row[1],
+                    row[2],
+                    row[3],
+                    row[4],
+                    row[5],
+                    row[6],
+                    0.0,
+                    usage,
+                    row[9],
+                )
+        elif statement.startswith("select provider_run_id, user_id, run_id"):
+            assert params is not None
+            user_id, run_id = params
+            self._rows = [
+                row[1:]
+                for row in self.connection.usage_ledger.values()
+                if row[2] == user_id and row[3] == run_id
+            ]
+        elif statement.startswith("select coalesce(sum(cost_usd)"):
+            assert params is not None
+            user_id, run_id = params
+            reservation_only = "usage ->> 'kind' = 'reservation'" in statement
+            total = 0.0
+            for row in self.connection.usage_ledger.values():
+                if row[2] != user_id or row[3] != run_id:
+                    continue
+                usage = row[8]
+                if reservation_only and usage.get("kind") != "reservation":
+                    continue
+                if not reservation_only and usage.get("kind") == "reservation":
+                    continue
+                total += row[7]
+            self._row = (total,)
+        elif statement.startswith("select scope_name, cache_key"):
+            assert params is not None
+            user_id, scope_name, cache_key = params
+            entry = self.connection.cache_entries.get((user_id, scope_name, cache_key))
+            self._row = entry
+        elif statement.startswith("insert into cache_entries"):
+            assert params is not None
+            user_id, scope_name, cache_key, payload, created_at = params
+            self.connection.cache_entries[(user_id, scope_name, cache_key)] = (
+                scope_name,
+                cache_key,
+                payload,
+                created_at,
+            )
+        elif statement.startswith("delete from cache_entries"):
+            assert params is not None
+            user_id, scope_name, cache_key = params
+            deleted = self.connection.cache_entries.pop((user_id, scope_name, cache_key), None)
+            self.rowcount = 1 if deleted is not None else 0
+        elif statement.startswith("insert into cleanup_tasks"):
+            assert params is not None
+            cleanup_task_id, user_id, run_id, task_type, status, run_at, payload, created_at = params
+            self.connection.cleanup_tasks.setdefault(
+                cleanup_task_id,
+                (cleanup_task_id, user_id, run_id, task_type, status, run_at, payload, created_at),
+            )
+        elif statement.startswith("select cleanup_task_id"):
+            assert params is not None
+            self._row = self.connection.cleanup_tasks.get(params[0])
         elif (
             statement.startswith("select user_id, run_id")
             and "order by created_at, run_id" in statement
@@ -303,6 +527,16 @@ class FakeConnection:
         self.jobs: dict[str, dict[str, Any]] = {}
         self.attempts_by_job: dict[str, int] = {}
         self.job_attempts: dict[tuple[str, str], dict[str, Any]] = {}
+        self.artifacts: dict[str, dict[str, Any]] = {}
+        self.document_chunks: dict[tuple[str, int], tuple[Any, ...]] = {}
+        self.stage_events: list[tuple[Any, ...]] = []
+        self.provider_configs: dict[str, tuple[Any, ...]] = {}
+        self.provider_config_entries: dict[tuple[str, str], tuple[Any, ...]] = {}
+        self.prompts: dict[tuple[str, str], tuple[Any, ...]] = {}
+        self.provider_runs: dict[str, tuple[Any, ...]] = {}
+        self.usage_ledger: dict[str, tuple[Any, ...]] = {}
+        self.cache_entries: dict[tuple[str, str, str], tuple[Any, ...]] = {}
+        self.cleanup_tasks: dict[str, tuple[Any, ...]] = {}
         self.executed: list[tuple[str, tuple[Any, ...] | None]] = []
         self.commits = 0
         self.rollbacks = 0
@@ -578,6 +812,148 @@ def test_postgres_metadata_store_cancels_terminal_fails_and_dead_letters_jobs():
         user_id=owner.user_id,
         job_id=dead_lettered.job_id,
     ).status == JobStatus.DEAD_LETTERED
+
+
+def test_postgres_metadata_store_round_trips_artifact_document_chunks_below_256kb():
+    connection = FakeConnection()
+    store = PostgresMetadataStore(connection)
+    run = _create_user_and_run(store)
+    job = _create_job(store, run)
+    artifact = ArtifactRecord(
+        user_id=run.user_id,
+        run_id=run.run_id,
+        artifact_id=ArtifactId.new(),
+        stage=ArtifactStage.TRANSLATOR,
+        artifact_type=ArtifactType.ENGLISH_TRANSLATION,
+        created_at=_utc(2026, 1, 12),
+    )
+    chunk = ArtifactDocumentChunkRecord(
+        artifact_id=artifact.artifact_id,
+        chunk_index=0,
+        user_id=run.user_id,
+        run_id=run.run_id,
+        text_content="x" * (256 * 1024 - 1),
+        token_count=123,
+        metadata={"language": "en"},
+        created_at=_utc(2026, 1, 12),
+    )
+    event = StageEventRecord(
+        user_id=run.user_id,
+        run_id=run.run_id,
+        job_id=job.job_id,
+        stage=ArtifactStage.TRANSLATOR,
+        event_type="artifact_written",
+        severity="info",
+        message="wrote chunk",
+        payload={"artifact_id": str(artifact.artifact_id)},
+        created_at=_utc(2026, 1, 12),
+    )
+
+    store.record_artifact(artifact, job_id=job.job_id, object_key="runs/r/artifact.json")
+    store.put_artifact_document_chunk(chunk)
+    store.record_stage_event(event)
+
+    assert store.get_artifact(user_id=run.user_id, artifact_id=artifact.artifact_id) == artifact
+    assert store.list_artifact_document_chunks(artifact_id=artifact.artifact_id) == [chunk]
+    assert store.list_stage_events(user_id=run.user_id, run_id=run.run_id) == [event]
+
+
+def test_postgres_metadata_store_round_trips_provider_config_and_prompt_versions():
+    connection = FakeConnection()
+    store = PostgresMetadataStore(connection)
+    snapshot = ProviderConfigSnapshot(
+        config_version_id=ProviderConfigVersionId.new(),
+        status=ProviderConfigStatus.ACTIVE,
+        provider_name="fake",
+        model_roles={"translation": "fake-text", "article": "fake-article"},
+        prompt_versions={"translation": "v1", "article": "v2"},
+    )
+    prompt = PromptVersionRecord(
+        prompt_version_id="prompt-version-1",
+        prompt_id="translation",
+        prompt_version="v1",
+        stage_name=ArtifactStage.TRANSLATOR,
+        body="Translate safely.",
+        checksum_sha256="abc123",
+        is_active=True,
+        created_at=_utc(2026, 1, 13),
+    )
+
+    store.save_provider_config(snapshot)
+    store.upsert_prompt_version(prompt)
+
+    assert store.get_active_config() == snapshot
+    assert store.get_config(snapshot.config_version_id) == snapshot
+    assert store.model_for_role(snapshot.config_version_id, "article") == "fake-article"
+    assert store.get_prompt_version(prompt_id="translation", prompt_version="v1") == prompt
+
+
+def test_postgres_metadata_store_usage_reservations_cache_and_actual_costs_survive_restart():
+    connection = FakeConnection()
+    first_store = PostgresMetadataStore(connection)
+    run = _create_user_and_run(first_store)
+    job = _create_job(first_store, run)
+    reservation = UsageRecord(
+        provider_run_id=ProviderRunId.new(),
+        user_id=run.user_id,
+        run_id=run.run_id,
+        job_id=job.job_id,
+        provider_name="fake",
+        model_id="fake-text",
+        cost_usd=0.75,
+        usage={"phase": "reserve"},
+        created_at=_utc(2026, 1, 14),
+    )
+    actual = UsageRecord(
+        provider_run_id=ProviderRunId.new(),
+        user_id=run.user_id,
+        run_id=run.run_id,
+        job_id=job.job_id,
+        provider_name="fake",
+        model_id="fake-text",
+        cost_usd=0.20,
+        usage={"input_tokens": 10, "output_tokens": 20},
+        created_at=_utc(2026, 1, 14),
+    )
+    scope = CacheScope(user_id=run.user_id, name="translator")
+
+    first_store.reserve_usage(reservation)
+    first_store.put(scope, "cache-key", {"value": "cached"})
+
+    second_store = PostgresMetadataStore(connection)
+    assert second_store.total_reserved_cost_usd(user_id=run.user_id, run_id=run.run_id) == 0.75
+    assert dict(second_store.get(scope, "cache-key").payload) == {"value": "cached"}
+
+    second_store.release_usage(reservation.provider_run_id)
+    second_store.record_usage(actual)
+
+    third_store = PostgresMetadataStore(connection)
+    assert third_store.total_reserved_cost_usd(user_id=run.user_id, run_id=run.run_id) == 0.0
+    assert third_store.total_run_cost_usd(user_id=run.user_id, run_id=run.run_id) == 0.20
+    assert third_store.list_run_usage(user_id=run.user_id, run_id=run.run_id)[-1] == actual
+    assert third_store.delete(scope, "cache-key") is True
+    assert third_store.get(scope, "cache-key") is None
+
+
+def test_postgres_metadata_store_cleanup_task_creation_is_idempotent():
+    connection = FakeConnection()
+    store = PostgresMetadataStore(connection)
+    run = _create_user_and_run(store)
+    cleanup = CleanupTaskRecord(
+        cleanup_task_id=CleanupTaskId.new(),
+        user_id=run.user_id,
+        run_id=run.run_id,
+        task_type="delete_run_objects",
+        status=CleanupTaskStatus.PENDING,
+        run_at=_utc(2026, 1, 15),
+        payload={"prefix": "tmp/users/usr/runs/run"},
+        created_at=_utc(2026, 1, 15),
+    )
+
+    assert store.create_cleanup_task_once(cleanup) == cleanup
+    assert store.create_cleanup_task_once(cleanup) == cleanup
+    assert len(connection.cleanup_tasks) == 1
+    assert store.get_cleanup_task(cleanup.cleanup_task_id) == cleanup
 
 
 def _utc(year: int, month: int, day: int) -> datetime:
