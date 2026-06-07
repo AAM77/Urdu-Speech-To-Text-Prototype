@@ -1,5 +1,9 @@
 """Infrastructure adapters for persistence, queues, storage, and providers."""
 
+from urdu_pipeline.infrastructure.filesystem import (
+    FilesystemArtifactSink,
+    FilesystemRunWorkspace,
+)
 from urdu_pipeline.infrastructure.in_memory import (
     InMemoryBudgetService,
     InMemoryCacheStore,
@@ -12,6 +16,8 @@ from urdu_pipeline.infrastructure.in_memory import (
 )
 
 __all__ = [
+    "FilesystemArtifactSink",
+    "FilesystemRunWorkspace",
     "InMemoryBudgetService",
     "InMemoryCacheStore",
     "InMemoryJobQueue",
