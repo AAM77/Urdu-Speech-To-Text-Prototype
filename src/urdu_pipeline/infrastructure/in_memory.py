@@ -343,6 +343,11 @@ class InMemoryMetadataStore:
             return None
         return record
 
+    def update_upload(self, record: UploadRecord) -> None:
+        if record.upload_id not in self._uploads:
+            raise KeyError(f"Upload not found: {record.upload_id}")
+        self._uploads[record.upload_id] = record
+
     def list_uploads(self, *, user_id: UserId) -> Sequence[UploadRecord]:
         return sorted(
             (record for record in self._uploads.values() if record.user_id == user_id),

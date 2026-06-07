@@ -58,6 +58,8 @@ class UploadRecord:
     upload_id: UploadId
     status: UploadStatus
     original_filename: str | None = None
+    content_type: str | None = None
+    size_bytes: int | None = None
     created_at: datetime = field(default_factory=_utcnow)
 
 
@@ -251,6 +253,8 @@ class MetadataStore(Protocol):
     def create_upload(self, record: UploadRecord) -> None: ...
 
     def get_upload(self, *, user_id: UserId, upload_id: UploadId) -> UploadRecord | None: ...
+
+    def update_upload(self, record: UploadRecord) -> None: ...
 
     def list_uploads(self, *, user_id: UserId) -> Sequence[UploadRecord]: ...
 

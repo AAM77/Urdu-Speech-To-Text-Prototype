@@ -56,15 +56,15 @@ Completed through:
 - Stage 1
 - Stage 2
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
-- Stage 4 through Step 4.2.4
+- Stage 4 through Step 4.3.1
 
 Next step in the original plan:
 
-- Step 4.3.1: Add Upload Init And Complete Routes
+- Step 4.3.2: Add Multipart And Direct Upload Routes
 
 Most recent verification:
 
-- Combined unit + safe integration: `468 passed, 3 skipped`
+- Combined unit + safe integration: `500 passed, 3 skipped`
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -1098,6 +1098,57 @@ Provider-switch relevance:
 
 - Not required for CLI provider switching.
 
+### Step 4.3.1: Add Upload Init And Complete Routes
+
+What was done (strict TDD — tests written and confirmed failing before implementation):
+
+- Extended `UploadRecord` in `src/urdu_pipeline/application/ports/services.py`:
+  - Added `content_type: str | None = None`.
+  - Added `size_bytes: int | None = None`.
+  These fields are stored internally but never returned alongside the internal object key.
+- Added `update_upload(record: UploadRecord) -> None` to the `MetadataStore` protocol.
+- Implemented `update_upload` in `InMemoryMetadataStore` (raises `KeyError` for unknown IDs).
+- Updated `InitUploadRequest` in `src/urdu_pipeline/api/schemas.py`:
+  - Added Pydantic `field_validator` validators for `filename` (non-empty, allowed extension),
+    `content_type` (must be in allowed set), and `size_bytes` (> 0, ≤ 500 MB).
+  - Allowed extensions: `.aac`, `.flac`, `.m4a`, `.mp3`, `.mp4`, `.ogg`, `.opus`, `.wav`, `.webm`.
+  - Allowed content-types: all common audio/video MIME types for those formats.
+  - `extra="forbid"` inherited from `_StrictModel` — unknown fields yield 422.
+- Created `src/urdu_pipeline/api/routes/uploads.py`:
+  - `POST /uploads/init` — requires `require_principal` (session or bearer) + `require_csrf`.
+    1. Derives internal object key as `uploads/{upload_id}` — never exposed in response.
+    2. Calls `ObjectStore.create_signed_upload_url(key, expires_in=1h)`.
+    3. Creates `UploadRecord(status=INITIALIZED, ...)` in `MetadataStore`.
+    4. Returns `InitUploadResponse(upload_id, upload_url, upload_url_expires_at, status)`.
+  - `GET /uploads/{upload_id}` — requires `require_principal`, no CSRF (read-only).
+    Returns 404 for unknown IDs or uploads not owned by the caller.
+  - `POST /uploads/{upload_id}/complete` — requires `require_principal` + `require_csrf`.
+    Transitions status to COMPLETED; returns 404 for unknown/unowned uploads.
+- Wired `uploads_router` into `src/urdu_pipeline/api/app.py`.
+- Wrote `tests/unit/test_upload_routes.py` (32 tests) BEFORE implementation:
+  - Confirmed all 32 tests failed at the start (404 from missing routes).
+  - Auth: 401 without credentials; 403 with session but no CSRF; 200 with CSRF; bearer bypasses CSRF.
+  - Validation: disallowed extension → 422; disallowed content_type → 422; size 0 → 422;
+    size > 500 MB → 422; unknown field → 422.
+  - No leakage: response contains `upload_id` and `upload_url` but not `user_id` or `object_key`.
+  - Ownership: another user's upload returns 404 (not 403) to avoid resource enumeration.
+  - Status transitions: init → "initialized"; complete → "completed".
+- Test count: 500 passed, 3 skipped.
+
+Why it was needed:
+
+- Provides the entry point for all audio uploads — clients cannot start a run without a
+  completed upload record.
+- Signed URL pattern keeps audio bytes out of the API server (direct client-to-object-store PUT),
+  reducing latency and memory pressure on the API.
+- Internal object key derivation (`uploads/{upload_id}`) ensures the storage topology is
+  opaque to callers; it can change without breaking the API contract.
+- Ownership checks on GET and complete prevent upload ID enumeration attacks.
+
+Provider-switch relevance:
+
+- Not required for CLI provider switching.
+
 ## Remaining Stage 4 Work
 
 Why needed:
@@ -1396,9 +1447,9 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- Current state: all unit and safe integration tests pass (468 passed, 3 skipped).
+- Current state: all unit and safe integration tests pass (500 passed, 3 skipped).
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 4.3.1: Add Upload Init And Complete Routes.
+- Next step is Step 4.3.2: Add Multipart And Direct Upload Routes.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
@@ -1419,10 +1470,8 @@ Track A: switch AI provider now
 
 Track B: continue backend conversion (currently active)
 
-- Next step: Step 4.3.1 — Add Upload Init And Complete Routes.
-- Then multipart/direct upload (4.3.2), run routes (4.3.3), artifact/event routes (4.3.4), OpenAPI review (4.3.5).
-- Then processor (Stage 5) and local parity stack (Stage 6).
-- Then resource routes (Step 4.3.x).
+- Next step: Step 4.3.2 — Add Multipart And Direct Upload Routes.
+- Then run routes (4.3.3), artifact/event routes (4.3.4), OpenAPI review (4.3.5).
 - Then processor (Stage 5) and local parity stack (Stage 6).
 
 Track C: stabilize and commit current work

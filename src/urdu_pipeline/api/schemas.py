@@ -20,9 +20,10 @@ as resource handles but carry no authorization by themselves.
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from urdu_pipeline.domain.states import ArtifactStage, ArtifactType, RunStatus, UploadStatus
 
@@ -103,6 +104,28 @@ class RevokeTokenResponse(_StrictModel):
 
 # ── Uploads ───────────────────────────────────────────────────────────────────
 
+_ALLOWED_EXTENSIONS: frozenset[str] = frozenset(
+    {".aac", ".flac", ".m4a", ".mp3", ".mp4", ".ogg", ".opus", ".wav", ".webm"}
+)
+_ALLOWED_CONTENT_TYPES: frozenset[str] = frozenset(
+    {
+        "audio/aac",
+        "audio/flac",
+        "audio/m4a",
+        "audio/mpeg",
+        "audio/ogg",
+        "audio/opus",
+        "audio/wav",
+        "audio/webm",
+        "audio/x-aac",
+        "audio/x-m4a",
+        "audio/x-wav",
+        "video/mp4",
+        "video/webm",
+    }
+)
+MAX_UPLOAD_BYTES: int = 500 * 1024 * 1024  # 500 MB
+
 
 class InitUploadRequest(_StrictModel):
     """Request to initialise a new upload slot and receive a signed upload URL.
@@ -113,6 +136,40 @@ class InitUploadRequest(_StrictModel):
     filename: str
     content_type: str
     size_bytes: int
+
+    @field_validator("filename")
+    @classmethod
+    def _check_filename(cls, v: str) -> str:
+        if not v:
+            raise ValueError("filename must not be empty")
+        ext = PurePosixPath(v).suffix.lower()
+        if ext not in _ALLOWED_EXTENSIONS:
+            raise ValueError(
+                f"File extension {ext!r} is not allowed. "
+                f"Allowed extensions: {sorted(_ALLOWED_EXTENSIONS)}"
+            )
+        return v
+
+    @field_validator("content_type")
+    @classmethod
+    def _check_content_type(cls, v: str) -> str:
+        if v not in _ALLOWED_CONTENT_TYPES:
+            raise ValueError(
+                f"Content-Type {v!r} is not allowed. "
+                f"Allowed types: {sorted(_ALLOWED_CONTENT_TYPES)}"
+            )
+        return v
+
+    @field_validator("size_bytes")
+    @classmethod
+    def _check_size_bytes(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("size_bytes must be greater than 0")
+        if v > MAX_UPLOAD_BYTES:
+            raise ValueError(
+                f"size_bytes must not exceed {MAX_UPLOAD_BYTES} bytes (500 MB)"
+            )
+        return v
 
 
 class InitUploadResponse(_StrictModel):
