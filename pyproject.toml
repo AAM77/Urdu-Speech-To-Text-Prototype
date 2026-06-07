@@ -55,6 +55,7 @@ api = [
     "boto3>=1.35,<2",
     "redis>=5.2,<7",
     "bcrypt>=4.0,<5",
+    "python-multipart>=0.0.9,<1",
 ]
 processor = [
     "openai>=2.30,<3",
@@ -88,6 +89,7 @@ dev = [
     "boto3>=1.35,<2",
     "redis>=5.2,<7",
     "bcrypt>=4.0,<5",
+    "python-multipart>=0.0.9,<1",
     "pytest>=9.0,<10",
     "pytest-mock>=3.14,<4",
     "anyio[trio]>=4.0,<5",

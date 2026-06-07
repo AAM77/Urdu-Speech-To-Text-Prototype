@@ -125,13 +125,12 @@ _ALLOWED_CONTENT_TYPES: frozenset[str] = frozenset(
     }
 )
 MAX_UPLOAD_BYTES: int = 500 * 1024 * 1024  # 500 MB
+MAX_DIRECT_UPLOAD_BYTES: int = 50 * 1024 * 1024  # 50 MB — direct uploads pass through API server
+MAX_PART_NUMBER: int = 10_000
 
 
-class InitUploadRequest(_StrictModel):
-    """Request to initialise a new upload slot and receive a signed upload URL.
-
-    Does not accept ``user_id``, object keys, or provider-related fields.
-    """
+class _BaseUploadRequest(_StrictModel):
+    """Shared validators for single-part and multipart upload init requests."""
 
     filename: str
     content_type: str
@@ -172,6 +171,13 @@ class InitUploadRequest(_StrictModel):
         return v
 
 
+class InitUploadRequest(_BaseUploadRequest):
+    """Request to initialise a new single-part upload slot.
+
+    Does not accept ``user_id``, object keys, or provider-related fields.
+    """
+
+
 class InitUploadResponse(_StrictModel):
     """Response containing the signed upload URL.
 
@@ -190,6 +196,54 @@ class UploadPartInfo(_StrictModel):
 
     part_number: int
     etag: str
+
+
+class InitMultipartUploadRequest(_BaseUploadRequest):
+    """Request to start a multipart upload and receive a signed URL for part 1.
+
+    Same extension, content-type, and size constraints as single-part init.
+    Does not accept ``user_id``, object keys, or provider-related fields.
+    """
+
+
+class InitMultipartUploadResponse(_StrictModel):
+    """Response from a multipart upload init.
+
+    Contains a signed URL for part 1 only; subsequent part URLs are fetched
+    individually from ``GET /uploads/multipart/{upload_id}/parts/{n}``.
+    No raw object key is returned.
+    """
+
+    upload_id: str
+    part_url: str
+    part_url_expires_at: datetime
+    status: UploadStatus
+
+
+class PartUrlResponse(_StrictModel):
+    """Signed URL for a specific multipart upload part."""
+
+    upload_id: str
+    part_number: int
+    part_url: str
+    part_url_expires_at: datetime
+
+
+class CompleteMultipartRequest(_StrictModel):
+    """Signals that all parts of a multipart upload have been PUT.
+
+    ``parts`` is required and must be non-empty.  Each entry must include
+    the ETag returned by the object store when the part was uploaded.
+    """
+
+    parts: list[UploadPartInfo]
+
+    @field_validator("parts")
+    @classmethod
+    def _check_parts_non_empty(cls, v: list[UploadPartInfo]) -> list[UploadPartInfo]:
+        if not v:
+            raise ValueError("parts must contain at least one part")
+        return v
 
 
 class CompleteUploadRequest(_StrictModel):

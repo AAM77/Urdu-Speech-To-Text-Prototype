@@ -56,15 +56,15 @@ Completed through:
 - Stage 1
 - Stage 2
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
-- Stage 4 through Step 4.3.1
+- Stage 4 through Step 4.3.2
 
 Next step in the original plan:
 
-- Step 4.3.2: Add Multipart And Direct Upload Routes
+- Step 4.3.3: Add Run Routes
 
 Most recent verification:
 
-- Combined unit + safe integration: `500 passed, 3 skipped`
+- Combined unit + safe integration: `551 passed, 3 skipped`
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -1149,6 +1149,67 @@ Provider-switch relevance:
 
 - Not required for CLI provider switching.
 
+### Step 4.3.2: Add Multipart And Direct Upload Routes
+
+What was done (strict TDD — tests written and confirmed failing before implementation):
+
+- Extended `UploadRecord` in `src/urdu_pipeline/application/ports/services.py`:
+  - Added `multipart_upload_id: str | None = None` — the object store's internal multipart
+    upload handle ID. Never exposed in API responses; used server-side to reconstruct the
+    `MultipartUpload` struct for complete/abort/part-URL operations.
+- Refactored `src/urdu_pipeline/api/schemas.py`:
+  - Extracted `_BaseUploadRequest` with shared `field_validator` logic for `filename`,
+    `content_type`, and `size_bytes`. Both `InitUploadRequest` and new
+    `InitMultipartUploadRequest` inherit from it.
+  - Added `MAX_DIRECT_UPLOAD_BYTES = 50 MB` and `MAX_PART_NUMBER = 10,000`.
+  - Added `InitMultipartUploadRequest` (same constraints as single-part init).
+  - Added `InitMultipartUploadResponse(upload_id, part_url, part_url_expires_at, status)`.
+  - Added `PartUrlResponse(upload_id, part_number, part_url, part_url_expires_at)`.
+  - Added `CompleteMultipartRequest(parts: list[UploadPartInfo])` with a non-empty validator.
+- Replaced `src/urdu_pipeline/api/routes/uploads.py` with the full route set:
+  - `POST /uploads/multipart/init` — starts multipart upload via `ObjectStore.create_multipart_upload`,
+    returns signed URL for part 1, stores `UploadRecord(status=UPLOADING, multipart_upload_id=...)`.
+  - `GET /uploads/multipart/{upload_id}/parts/{part_number}` — returns a fresh signed URL for
+    any part (1–10,000); validates part_number and enforces ownership (404 for unknown/other user).
+  - `POST /uploads/multipart/{upload_id}/complete` — calls `ObjectStore.complete_multipart_upload`
+    with caller-supplied ETags, transitions status to COMPLETED. Requires non-empty parts.
+  - `DELETE /uploads/multipart/{upload_id}` — calls `ObjectStore.abort_multipart_upload`,
+    transitions status to CANCELLED.
+  - `POST /uploads/direct` — accepts `UploadFile` (multipart/form-data), validates extension
+    and content_type (same allowlists as init), enforces 50 MB ceiling (returns 413 over limit),
+    rejects empty files (422), streams bytes to `ObjectStore.put_stream`, stores
+    `UploadRecord(status=COMPLETED)` in a single round-trip.
+  - All existing single-part routes preserved: `POST /uploads/init`, `GET /uploads/{upload_id}`,
+    `POST /uploads/{upload_id}/complete`.
+  - Route ordering: literal-path segments (multipart/*, direct) are declared before parameterised
+    `/{upload_id}` routes to prevent path parameter shadowing.
+- Added `python-multipart>=0.0.9,<1` to `pyproject.toml` (required by FastAPI for `UploadFile`).
+- Wrote `tests/unit/test_multipart_upload_routes.py` (51 tests) BEFORE implementation:
+  - Confirmed all 51 tests failed at the start (routes absent).
+  - Multipart init: auth, CSRF, bearer bypass, response fields, no key leakage, all validation rules.
+  - Part URL: auth, 200 with signed URL, 404 for unknown/other-user, part-size constraints
+    (0, negative, > 10,000 → 400).
+  - Complete: auth, CSRF, non-empty parts required, 422 for empty/missing parts, 404 ownership.
+  - Abort: auth, CSRF, status=cancelled, 404 ownership.
+  - Direct upload: auth, CSRF, status=completed, no key leakage, extension/content_type policy
+    parity with init, empty file → 422, > 50 MB → 413.
+- Test count: 551 passed, 3 skipped.
+
+Why it was needed:
+
+- Multipart uploads allow clients to upload large audio files reliably by splitting them into
+  independently-signed, retriable parts (mirrors the S3/R2 multipart API).
+- The abort endpoint ensures in-progress multipart uploads can be cancelled, freeing object-store
+  resources from orphaned parts.
+- Direct upload provides a simpler one-shot path for small files and automated tests without
+  requiring a separate "complete" step.
+- Policy parity between all three upload paths (init, multipart, direct) ensures no bypass
+  of the extension and MIME-type allowlists regardless of how the client chooses to upload.
+
+Provider-switch relevance:
+
+- Not required for CLI provider switching.
+
 ## Remaining Stage 4 Work
 
 Why needed:
@@ -1447,9 +1508,9 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- Current state: all unit and safe integration tests pass (500 passed, 3 skipped).
+- Current state: all unit and safe integration tests pass (551 passed, 3 skipped).
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 4.3.2: Add Multipart And Direct Upload Routes.
+- Next step is Step 4.3.3: Add Run Routes.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
@@ -1470,8 +1531,8 @@ Track A: switch AI provider now
 
 Track B: continue backend conversion (currently active)
 
-- Next step: Step 4.3.2 — Add Multipart And Direct Upload Routes.
-- Then run routes (4.3.3), artifact/event routes (4.3.4), OpenAPI review (4.3.5).
+- Next step: Step 4.3.3 — Add Run Routes.
+- Then artifact/event routes (4.3.4), OpenAPI review (4.3.5).
 - Then processor (Stage 5) and local parity stack (Stage 6).
 
 Track C: stabilize and commit current work

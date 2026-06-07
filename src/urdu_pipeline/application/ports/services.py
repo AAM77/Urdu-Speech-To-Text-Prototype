@@ -60,6 +60,7 @@ class UploadRecord:
     original_filename: str | None = None
     content_type: str | None = None
     size_bytes: int | None = None
+    multipart_upload_id: str | None = None
     created_at: datetime = field(default_factory=_utcnow)
 
 
