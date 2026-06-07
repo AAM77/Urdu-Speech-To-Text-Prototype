@@ -133,6 +133,102 @@ def test_core_user_auth_upload_run_migration_defines_basic_constraints():
     assert "foreign key (upload_id) references uploads(upload_id)" in sql
 
 
+def test_load_migrations_includes_workflow_metadata_tables():
+    migrations = {migration.version: migration for migration in load_migrations()}
+
+    assert "0003" in migrations
+    assert migrations["0003"].name == (
+        "job_attempt_artifact_event_usage_cache_provider_prompt_cleanup_tables"
+    )
+
+
+def test_workflow_metadata_migration_creates_required_tables():
+    sql = _normalized_migration_sql("0003")
+
+    for table_name in (
+        "provider_config_versions",
+        "provider_config_entries",
+        "prompt_versions",
+        "jobs",
+        "job_attempts",
+        "artifacts",
+        "artifact_document_chunks",
+        "stage_events",
+        "provider_runs",
+        "usage_ledger",
+        "cache_entries",
+        "cleanup_tasks",
+    ):
+        assert f"create table if not exists {table_name}" in sql
+
+
+def test_workflow_metadata_migration_defines_indexes_and_uniqueness():
+    sql = _normalized_migration_sql("0003")
+
+    for index_name in (
+        "idx_provider_config_versions_status",
+        "idx_prompt_versions_prompt_id_active",
+        "idx_jobs_run_status",
+        "idx_jobs_user_status",
+        "idx_job_attempts_job_status",
+        "idx_artifacts_run_stage",
+        "idx_artifact_document_chunks_artifact",
+        "idx_stage_events_run_created_at",
+        "idx_provider_runs_job_id",
+        "idx_usage_ledger_run_id",
+        "idx_cache_entries_scope",
+        "idx_cleanup_tasks_status_run_at",
+    ):
+        assert f"create index if not exists {index_name}" in sql
+
+    for unique_clause in (
+        "unique (config_version_id, role)",
+        "unique (prompt_id, prompt_version)",
+        "unique (job_id, attempt_number)",
+        "unique (artifact_id, chunk_index)",
+        "unique (user_id, scope_name, cache_key)",
+    ):
+        assert unique_clause in sql
+
+
+def test_workflow_metadata_migration_defines_ownership_and_constraints():
+    sql = _normalized_migration_sql("0003")
+
+    for ownership_column in (
+        "user_id text not null",
+        "run_id text not null",
+        "job_id text not null",
+    ):
+        assert ownership_column in sql
+
+    for constraint in (
+        "provider_config_versions_config_version_id_format",
+        "provider_config_versions_status_check",
+        "jobs_job_id_format",
+        "jobs_status_check",
+        "job_attempts_status_check",
+        "artifacts_artifact_id_format",
+        "artifacts_stage_check",
+        "artifacts_type_check",
+        "provider_runs_provider_run_id_format",
+        "usage_ledger_cost_non_negative",
+        "cache_entries_non_empty_scope",
+        "cleanup_tasks_cleanup_task_id_format",
+        "cleanup_tasks_status_check",
+    ):
+        assert f"constraint {constraint}" in sql
+
+    for foreign_key in (
+        "foreign key (user_id) references users(user_id)",
+        "foreign key (run_id) references runs(run_id)",
+        "foreign key (job_id) references jobs(job_id)",
+        "foreign key (artifact_id) references artifacts(artifact_id)",
+        "foreign key (provider_run_id) references provider_runs(provider_run_id)",
+        "foreign key (config_version_id) references provider_config_versions(config_version_id)",
+    ):
+        assert foreign_key in sql
+
+
 def test_run_migrations_applies_and_then_skips_existing_versions():
     migration = Migration(
         version="9999",
