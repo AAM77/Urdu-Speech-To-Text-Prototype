@@ -56,15 +56,15 @@ Completed through:
 - Stage 1
 - Stage 2
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
-- Stage 4 through Step 4.1.1
+- Stage 4 through Step 4.1.2
 
 Next step in the original plan:
 
-- Step 4.1.2: Add Strict Public Request/Response Schemas
+- Step 4.2.1: Add Admin CLI For Users And Service Identities
 
 Most recent verification:
 
-- Combined unit + safe integration: `231 passed, 3 skipped`
+- Combined unit + safe integration: `352 passed, 3 skipped`
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -841,33 +841,48 @@ Provider-switch relevance:
 - Not required for CLI provider switching.
 - Required for the hosted API that stages 4-6 build.
 
+### Step 4.1.2: Add Strict Public Request/Response Schemas
+
+What was done:
+
+- Added `src/urdu_pipeline/api/schemas.py` with 21 Pydantic v2 models in a
+  `_StrictModel` base that sets `ConfigDict(extra="forbid")` on all schemas.
+- Covered all six resource domains from the plan:
+  - Auth: `LoginRequest`, `SessionResponse`
+  - Tokens: `CreateTokenRequest`, `CreateTokenResponse`, `TokenSummary`,
+    `TokenListResponse`, `RevokeTokenResponse`
+  - Uploads: `InitUploadRequest`, `InitUploadResponse`, `UploadPartInfo`,
+    `CompleteUploadRequest`, `UploadResponse`
+  - Runs: `CreateRunRequest`, `RunResponse`, `RunListResponse`,
+    `CancelRunResponse`
+  - Events: `EventResponse`, `EventListResponse`
+  - Artifacts: `ArtifactSummary`, `ArtifactListResponse`,
+    `ArtifactDownloadResponse`
+- Key security properties enforced:
+  - `InitUploadResponse` and `ArtifactDownloadResponse` return signed URLs,
+    never raw object keys.
+  - `CreateRunRequest` accepts only `upload_id` and optional `description`.
+    Provider, model, and prompt fields are server-controlled and not accepted.
+  - `CreateTokenResponse` includes `token` (shown once); `TokenSummary` omits it.
+  - `EventResponse` omits all pipeline text; callers use artifact download.
+
+Why it was needed:
+
+- Enforcing `extra="forbid"` at the schema layer means FastAPI returns 422 for
+  any unknown field — no silent injection of provider/model/prompt fields.
+- Keeping `user_id` and object keys out of all schemas prevents accidental
+  leakage and enforces the ADR-003 opaque-keys constraint.
+
+Provider-switch relevance:
+
+- Not required for CLI provider switching.
+- Required for the API that accepts run creation from external callers.
+
 ## What Is Left In The Original Plan
 
 ## Remaining Stage 4 Work
 
-### Step 4.1.2: Add Strict Public Request/Response Schemas (NEXT STEP)
-
-Why the original plan includes it:
-
-- Public API schemas must reject unknown fields, never expose internal IDs
-  (user_id, object keys, provider/model names), and never accept raw text,
-  artifact JSON, or prompt fields from callers.
-- Pydantic v2 with `model_config = ConfigDict(extra="forbid")` enforces this.
-
-What to implement:
-
-- Request/response Pydantic models for:
-  - auth (login, token create, token revoke)
-  - uploads (init, complete, get)
-  - runs (create, list, get, cancel)
-  - events (list)
-  - artifacts (list, get, download)
-  - tokens (create, revoke, list)
-- Tests proving unknown fields are rejected.
-- Tests proving public schemas never include `user_id`, object keys, provider
-  fields, raw text, or artifact JSON.
-
-### Step 4.2.x: Auth, Sessions, Tokens, CSRF, CORS, Rate Limits
+### Step 4.2.x: Auth, Sessions, Tokens, CSRF, CORS, Rate Limits (NEXT)
 
 Remaining phases:
 
@@ -1098,6 +1113,7 @@ API:
 - `src/urdu_pipeline/api/dependencies.py`              (NEW — AppState, get_* Depends functions)
 - `src/urdu_pipeline/api/routes/__init__.py`           (NEW)
 - `src/urdu_pipeline/api/routes/health.py`             (NEW — GET /health)
+- `src/urdu_pipeline/api/schemas.py`                   (NEW — 21 strict public schemas)
 
 Provider/stage safety:
 
@@ -1139,6 +1155,10 @@ Tests:
                                                           seed_provider_config, seed_bucket)
 - `tests/unit/test_api_skeleton.py`                    (NEW — /health route, AppState wiring,
                                                           no secrets leak, 404 on unknown path)
+- `tests/unit/test_api_schemas.py`                     (NEW — 121 tests: extra=forbid on all schemas,
+                                                          forbidden field names absent, specific
+                                                          forbidden fields rejected by name, valid
+                                                          data round-trips)
 
 ## How To Hand This To Another AI Provider
 
@@ -1160,9 +1180,9 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- Current state: all unit and safe integration tests pass (231 passed, 3 skipped).
+- Current state: all unit and safe integration tests pass (352 passed, 3 skipped).
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 4.1.2: Add Strict Public Request/Response Schemas.
+- Next step is Step 4.2.1: Add Admin CLI For Users And Service Identities.
 - Preserve all prompt-safety and provider-request boundaries.
 - Run targeted tests before full suites.
 - Do not revert unrelated work.
@@ -1181,8 +1201,9 @@ Track A: switch AI provider now
 
 Track B: continue backend conversion (currently active)
 
-- Next step: Step 4.1.2 — Add Strict Public Request/Response Schemas.
-- Then auth (Step 4.2.x), resource routes (Step 4.3.x).
+- Next step: Step 4.2.1 — Add Admin CLI For Users And Service Identities.
+- Then login/session (4.2.2), bearer tokens (4.2.3), CSRF/CORS/rate limits (4.2.4).
+- Then resource routes (Step 4.3.x).
 - Then processor (Stage 5) and local parity stack (Stage 6).
 
 Track C: stabilize and commit current work
