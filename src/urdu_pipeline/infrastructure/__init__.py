@@ -15,6 +15,7 @@ from urdu_pipeline.infrastructure.in_memory import (
     InMemorySecretProvider,
     InMemoryUsageLedger,
 )
+from urdu_pipeline.infrastructure.redis_queue import RedisJobQueue
 from urdu_pipeline.infrastructure.s3 import S3ObjectStore
 
 __all__ = [
@@ -29,5 +30,6 @@ __all__ = [
     "InMemoryProviderRegistry",
     "InMemorySecretProvider",
     "InMemoryUsageLedger",
+    "RedisJobQueue",
     "S3ObjectStore",
 ]

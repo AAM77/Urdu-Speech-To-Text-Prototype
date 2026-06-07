@@ -34,6 +34,7 @@ def test_optional_dependencies_are_split_by_runtime_boundary():
         "processor",
         "db",
         "object-store",
+        "queue",
         "dev",
     }
     optional = pyproject["project"]["optional-dependencies"]
@@ -51,10 +52,13 @@ def test_optional_dependencies_are_split_by_runtime_boundary():
     )
     assert {"typer", "rich"}.issubset(_dependency_names(optional["cli"]))
     assert {"streamlit"}.issubset(_dependency_names(optional["ui"]))
-    assert {"psycopg", "boto3"}.issubset(_dependency_names(optional["api"]))
-    assert {"openai", "psycopg", "boto3"}.issubset(_dependency_names(optional["processor"]))
+    assert {"psycopg", "boto3", "redis"}.issubset(_dependency_names(optional["api"]))
+    assert {"openai", "psycopg", "boto3", "redis"}.issubset(
+        _dependency_names(optional["processor"])
+    )
     assert {"psycopg"}.issubset(_dependency_names(optional["db"]))
     assert {"boto3"}.issubset(_dependency_names(optional["object-store"]))
+    assert {"redis"}.issubset(_dependency_names(optional["queue"]))
     assert {"pytest", "pytest-mock"}.issubset(_dependency_names(optional["dev"]))
 
 

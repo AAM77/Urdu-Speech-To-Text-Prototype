@@ -50,17 +50,22 @@ ui = [
 api = [
     "psycopg[binary]>=3.2,<4",
     "boto3>=1.35,<2",
+    "redis>=5.2,<7",
 ]
 processor = [
     "openai>=2.30,<3",
     "psycopg[binary]>=3.2,<4",
     "boto3>=1.35,<2",
+    "redis>=5.2,<7",
 ]
 db = [
     "psycopg[binary]>=3.2,<4",
 ]
 object-store = [
     "boto3>=1.35,<2",
+]
+queue = [
+    "redis>=5.2,<7",
 ]
 dev = [
     "pydantic>=2.13,<3",
@@ -74,6 +79,7 @@ dev = [
     "openai>=2.30,<3",
     "psycopg[binary]>=3.2,<4",
     "boto3>=1.35,<2",
+    "redis>=5.2,<7",
     "pytest>=9.0,<10",
     "pytest-mock>=3.14,<4",
 ]
