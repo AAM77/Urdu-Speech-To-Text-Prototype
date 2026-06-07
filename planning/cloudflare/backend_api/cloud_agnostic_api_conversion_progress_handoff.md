@@ -1,6 +1,6 @@
 # Cloud-Agnostic API Conversion Progress Handoff
 
-Last updated: 2026-06-07 (session 10)
+Last updated: 2026-06-07 (session 11)
 
 This document summarizes what has been completed from
 `cloud_agnostic_api_conversion_stepwise_commit_plan.md`, why each part exists,
@@ -59,14 +59,19 @@ Completed through:
 - Stage 4 (complete)
 - Stage 5 (complete)
 - Stage 6 (complete)
+- Stage 7 Step 7.1.1 (complete)
 
 Next step in the original plan:
 
-- Stage 7: Step 7.1.1 — Harden Structured Logging And Redaction
+- Stage 7: Step 7.1.2 — Add Cleanup Scheduler
 
 Most recent verification:
 
-- Combined unit + safe integration: `825 passed, 3 skipped`
+- Combined unit + safe integration: `831 passed, 3 skipped`
+- Full unit suite: `807 passed`
+- Safe integration suite: `24 passed, 3 skipped`
+- Targeted Stage 7.1.1 redaction tests: `6 passed`
+- Affected PostgreSQL/API/processor tests: `112 passed`
 - Targeted compose fake-provider E2E contract tests: `10 passed`
 - Affected compose/packaging/Makefile/migration/Postgres/API route tests:
   `216 passed`
@@ -2338,7 +2343,7 @@ Needed for provider switch?
 
 - No.
 
-## Remaining Stage 7: Operational Hardening
+## Stage 7: Operational Hardening
 
 Purpose:
 
@@ -2346,7 +2351,6 @@ Make the backend operable and safer under failure.
 
 Remaining phases:
 
-- structured logging and redaction
 - cleanup scheduler
 - outage/failure-mode tests
 - backup/restore/operator docs
@@ -2359,6 +2363,65 @@ Why needed:
 Needed for provider switch?
 
 - No.
+
+### Step 7.1.1: Harden Structured Logging And Redaction
+
+What was done (strict TDD - tests written and confirmed failing before
+implementation):
+
+- Added `tests/unit/test_logging_redaction.py` covering:
+  - top-level sensitive log fields (`api_key`, bearer auth, prompts, raw
+    transcripts, translations, article bodies, object keys)
+  - nested event/log payloads containing full translations, Urdu transcript
+    text, article body markdown, object keys, and unknown long strings
+  - preservation of safe operational metadata such as stage, event type, model,
+    provider, counts, cache flags, and cost
+  - API request logging that records only method/path/status and excludes
+    headers, cookies, CSRF values, query strings, request bodies, and response
+    bodies
+  - processor stage events sanitizing optional messages and payloads before
+    adapter persistence
+- Added a PostgreSQL metadata-store regression test proving direct
+  `record_stage_event` calls sanitize sensitive messages/payloads before
+  durable storage.
+- Confirmed the new tests failed before implementation:
+  - `safe_log_event` leaked authorization, prompt, object-key, and nested
+    payload data.
+  - `redact_log_fields` did not exist.
+  - API app had no request logging hook.
+  - processor `_record_event` did not accept/sanitize optional diagnostics.
+  - PostgreSQL stage events stored raw message/payload values.
+- Extended `src/urdu_pipeline/logging_utils.py`:
+  - added recursive `redact_log_fields`
+  - added `redact_event_message`
+  - updated `safe_log_event` to preserve safe metadata while redacting/summarizing
+    secrets, prompts, object keys, raw text, model outputs, full artifact-like
+    payload fields, bytes, nested mappings/lists, and unknown free-form strings
+- Added API request logging middleware in `src/urdu_pipeline/api/app.py`:
+  - emits `api_request` with method, path, and status code only
+  - logs 500 status before re-raising unexpected exceptions
+- Updated `src/urdu_pipeline/processor/runtime.py`:
+  - `_record_event` accepts optional `message` and `payload`
+  - payloads/messages are sanitized before `StageEventRecord` creation
+- Updated `src/urdu_pipeline/infrastructure/db/metadata.py`:
+  - `record_stage_event` sanitizes message and payload before inserting rows
+  - existing safe metadata such as `artifact_id` round-trips unchanged
+
+Why it was needed:
+
+- Stage events and operational logs are visible to operators and potentially
+  copied into tickets or monitoring tools.
+- Raw prompts, source text, translations, article bodies, full artifacts,
+  object keys, headers, cookies, bearer tokens, and CSRF tokens must not be
+  emitted as diagnostics.
+- Centralizing redaction prevents every API route, processor stage, and adapter
+  from needing bespoke safety logic.
+
+Provider-switch relevance:
+
+- Not required for switching providers, but protects real provider prompts,
+  provider outputs, usage diagnostics, and object-storage details once real
+  provider mode is enabled.
 
 ## Remaining Stage 8: Cloudflare Adapter Spike
 
@@ -2560,14 +2623,15 @@ Give the next AI these files first:
 Tell the next AI explicitly:
 
 - Current state: all local unit and safe integration tests pass
-  (`825 passed, 3 skipped`).
+  (`831 passed, 3 skipped`).
 - Stage 4 COMPLETE. Stage 5 COMPLETE. Stage 6 COMPLETE through Step 6.2.3.
 - **Deployment target: AWS Lightsail** (decided 2026-06-07). Cloudflare is no
   longer the target. The architecture remains cloud-agnostic; only Stage 8
   content and Stage 9 provisioning changed in the plan. No code changes needed
   — all completed work was already cloud-agnostic.
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Stage 7 Step 7.1.1: Harden Structured Logging And Redaction.
+- Stage 7 Step 7.1.1 is complete.
+- Next step is Stage 7 Step 7.1.2: Add Cleanup Scheduler.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
@@ -2613,7 +2677,10 @@ Track B: continue backend conversion (currently active)
   - Stage 9 provisioning updated for AWS resources.
   - Stage 8 (Cloudflare spike) is fully replaced — no work to carry forward.
   - Nothing in Stages 1–5 needs to change.
-- Next step: Stage 7 Step 7.1.1 — Harden Structured Logging And Redaction.
+- **Stage 7 Step 7.1.1 is COMPLETE** (recursive structured logging
+  redaction, API request logging, processor event sanitization, and PostgreSQL
+  stage-event sanitization).
+- Next step: Stage 7 Step 7.1.2 — Add Cleanup Scheduler.
 - Then AWS adapter verification (Stage 8), production deploy (Stage 9).
 
 Track C: stabilize and commit current work

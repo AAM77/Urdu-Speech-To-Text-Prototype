@@ -21,6 +21,7 @@ from urdu_pipeline.infrastructure.db.metadata import (
 from urdu_pipeline.infrastructure.db.migrations import connect_postgres
 from urdu_pipeline.infrastructure.redis_queue import RedisJobQueue
 from urdu_pipeline.infrastructure.s3 import S3ObjectStore
+from urdu_pipeline.logging_utils import redact_event_message, redact_log_fields
 from urdu_pipeline.processor.lifecycle import claim_and_run
 from urdu_pipeline.stages.article_generator import run_article_stage
 from urdu_pipeline.stages.chunker import run_chunker_stage
@@ -200,9 +201,20 @@ def _materialize_upload(upload, *, object_store: Any, root: Path) -> Path:
     return target
 
 
-def _record_event(metadata_store: Any, job, stage: ArtifactStage, event_type: str) -> None:
+def _record_event(
+    metadata_store: Any,
+    job,
+    stage: ArtifactStage,
+    event_type: str,
+    *,
+    message: str | None = None,
+    payload: dict[str, Any] | None = None,
+) -> None:
     if not hasattr(metadata_store, "record_stage_event"):
         return
+    event_payload = {"stage": stage.value}
+    if payload:
+        event_payload.update(payload)
     metadata_store.record_stage_event(
         StageEventRecord(
             user_id=job.user_id,
@@ -211,8 +223,8 @@ def _record_event(metadata_store: Any, job, stage: ArtifactStage, event_type: st
             stage=stage,
             event_type=event_type,
             severity="info",
-            message=event_type,
-            payload={"stage": stage.value},
+            message=redact_event_message(message or event_type, fallback=event_type),
+            payload=redact_log_fields(event_payload),
         )
     )
 

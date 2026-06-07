@@ -1232,6 +1232,47 @@ def test_postgres_metadata_store_round_trips_artifact_document_chunks_below_256k
     assert store.list_stage_events(user_id=run.user_id, run_id=run.run_id) == [event]
 
 
+def test_postgres_metadata_store_redacts_sensitive_stage_event_fields():
+    connection = FakeConnection()
+    store = PostgresMetadataStore(connection)
+    run = _create_user_and_run(store)
+    job = _create_job(store, run)
+    event = StageEventRecord(
+        user_id=run.user_id,
+        run_id=run.run_id,
+        job_id=job.job_id,
+        stage=ArtifactStage.TRANSLATOR,
+        event_type="stage_failed",
+        severity="error",
+        message="failed while processing NEVER_LOG_TRANSLATION",
+        payload={
+            "stage": "translator",
+            "safe_count": 3,
+            "object_key": "artifacts/users/user_abc/runs/run_def/translator/artifact.json",
+            "prompt": "NEVER_LOG_PROMPT",
+            "full_text_english": "NEVER_LOG_FULL_TRANSLATION",
+            "article": {"body_markdown": "NEVER_LOG_ARTICLE_BODY"},
+        },
+        created_at=_utc(2026, 1, 12),
+    )
+
+    store.record_stage_event(event)
+
+    [stored] = store.list_stage_events(user_id=run.user_id, run_id=run.run_id)
+    assert stored.message == "stage_failed"
+    assert stored.payload["stage"] == "translator"
+    assert stored.payload["safe_count"] == 3
+    serialized = str(stored.payload) + str(stored.message)
+    for forbidden in (
+        "NEVER_LOG_TRANSLATION",
+        "NEVER_LOG_PROMPT",
+        "NEVER_LOG_FULL_TRANSLATION",
+        "NEVER_LOG_ARTICLE_BODY",
+        "artifacts/users/user_abc",
+    ):
+        assert forbidden not in serialized
+
+
 def test_postgres_metadata_store_round_trips_provider_config_and_prompt_versions():
     connection = FakeConnection()
     store = PostgresMetadataStore(connection)

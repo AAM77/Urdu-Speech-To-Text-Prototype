@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from urdu_pipeline.api.dependencies import AppState
@@ -13,6 +13,10 @@ from urdu_pipeline.api.routes.tokens import router as tokens_router
 from urdu_pipeline.api.routes.artifacts import artifacts_router, runs_router as artifact_runs_router
 from urdu_pipeline.api.routes.runs import router as runs_router
 from urdu_pipeline.api.routes.uploads import router as uploads_router
+from urdu_pipeline.logging_utils import get_logger, safe_log_event
+
+
+_LOGGER = get_logger("api")
 
 
 def create_app(
@@ -52,6 +56,28 @@ def create_app(
 
     if state is not None:
         app.state.app_state = state
+
+    @app.middleware("http")
+    async def _log_request(request: Request, call_next):
+        try:
+            response = await call_next(request)
+        except Exception:
+            safe_log_event(
+                _LOGGER,
+                "api_request",
+                method=request.method,
+                path=request.url.path,
+                status_code=500,
+            )
+            raise
+        safe_log_event(
+            _LOGGER,
+            "api_request",
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+        )
+        return response
 
     app.include_router(health_router)
     app.include_router(internal_router)

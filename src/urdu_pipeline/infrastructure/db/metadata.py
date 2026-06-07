@@ -44,6 +44,7 @@ from urdu_pipeline.domain import (
     UserId,
     UserStatus,
 )
+from urdu_pipeline.logging_utils import redact_event_message, redact_log_fields
 
 
 @dataclass(frozen=True)
@@ -1084,6 +1085,8 @@ class PostgresMetadataStore:
         return [_artifact_document_chunk_from_row(row) for row in rows]
 
     def record_stage_event(self, record: StageEventRecord) -> None:
+        safe_message = redact_event_message(record.message, fallback=record.event_type)
+        safe_payload = redact_log_fields(record.payload)
         self._write(
             lambda cursor: cursor.execute(
                 """
@@ -1109,8 +1112,8 @@ class PostgresMetadataStore:
                     record.stage.value,
                     record.event_type,
                     record.severity,
-                    record.message,
-                    dict(record.payload),
+                    safe_message,
+                    dict(safe_payload),
                     record.created_at,
                 ),
             )
