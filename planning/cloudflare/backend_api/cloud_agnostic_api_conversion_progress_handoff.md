@@ -56,15 +56,15 @@ Completed through:
 - Stage 1
 - Stage 2
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
-- Stage 4 (complete) + Stage 5 through Step 5.3.1
+- Stage 4 (complete) + Stage 5 through Step 5.3.2 (Phase 5.3 COMPLETE)
 
 Next step in the original plan:
 
-- Step 5.3.2: Add Temporary Object And Workspace Cleanup
+- Stage 6: Step 6.1.1 — Add API And Processor Dockerfiles
 
 Most recent verification:
 
-- Combined unit + safe integration: `767 passed` (0 skipped in unit run)
+- Combined unit + safe integration: `781 passed`
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -1265,7 +1265,7 @@ What was done:
   - Translation usage key: `stage_usage_key(run_id, "translator")`.
   - Article usage key: `stage_usage_key(run_id, "article_generator")`.
 
-- Test count: **767 passed**.
+- Test count: **767 passed** (prior to 5.3.2).
 
 Why it was needed:
 
@@ -1282,6 +1282,57 @@ Why it was needed:
 - All existing stage function tests continue to pass unchanged because
   `_FakeArtifactRepo.list_run_artifacts` returns `[]`, so the new idempotency
   check is a no-op there (no existing artifacts → run normally).
+
+### Step 5.3.2: Add Temporary Object And Workspace Cleanup
+
+What was done:
+
+- Wrote `tests/unit/test_processor_cleanup.py` (14 tests) before any
+  implementation, confirming failure with `ModuleNotFoundError`. Tests cover:
+  - `cleanup_run_tmp_objects` calls `delete_prefix` with a prefix that contains
+    both `user_id` and `run_id` and starts with `tmp/`.
+  - Returns the deleted object count from `delete_prefix`.
+  - Returns 0 when nothing was deleted.
+  - Different runs produce different prefixes (no cross-run deletion).
+  - Integration test with `InMemoryObjectStore`: 2 run-scoped objects deleted,
+    unrelated `tmp/other/key` preserved; verified via `list_prefix`.
+  - `cleanup_workspace` removes the workspace root directory.
+  - `cleanup_workspace` is safe when the directory does not exist.
+  - `cleanup_workspace` calls `workspace.cleanup()` exactly once.
+  - `cleanup_after_run(is_retry=False)` calls `delete_prefix` and workspace
+    cleanup (covers success and fatal failure paths).
+  - `cleanup_after_run(is_retry=True)` does NOT call `delete_prefix` (tmp
+    objects preserved for retry), but still calls workspace cleanup.
+  - `cleanup_after_run` workspace cleanup runs even when `delete_prefix` raises
+    (verified by checking `cleanup_calls == 1` after `RuntimeError`).
+
+- Created `src/urdu_pipeline/processor/cleanup.py` with:
+  - `cleanup_run_tmp_objects(job_record, *, object_store, key_builder=None) -> int`
+    Calls `object_store.delete_prefix(f"tmp/users/{user_id}/runs/{run_id}/")`.
+    Returns the number of deleted objects.
+  - `cleanup_workspace(workspace) -> None`
+    Calls `workspace.cleanup()` (delegates to `FilesystemRunWorkspace.cleanup`,
+    which removes the workspace root via `shutil.rmtree`).
+  - `cleanup_after_run(job_record, *, workspace, object_store, is_retry, key_builder=None) -> None`
+    `try` block deletes tmp objects when `not is_retry`.
+    `finally` block always calls `cleanup_workspace`.
+    This guarantees workspace cleanup even when the object store is unavailable.
+
+- Test count: **781 passed**.
+
+Why it was needed:
+
+- Chunk files uploaded to `tmp/` accumulate per run attempt; without cleanup
+  they would grow indefinitely, incurring ongoing storage charges.
+- The `is_retry` distinction is critical: on a transient failure the chunks are
+  preserved so the idempotent chunker stage (Step 5.3.1) can skip re-uploading
+  them on the next attempt. On a successful or permanently failed run they can
+  be safely deleted because no future attempt will need them.
+- Local workspace directories are ephemeral and per-attempt. Keeping them would
+  exhaust disk space on the processor host. The `finally` guarantee ensures
+  they are always cleaned regardless of object store availability.
+- `_FakeWorkspace` (defined in the test file) tracks `cleanup_calls`, enabling
+  precise assertions without real filesystem dependencies.
 
 Provider-switch relevance:
 
@@ -2094,15 +2145,15 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- Current state: all unit tests pass (767 passed).
-- Stage 4 COMPLETE. Stage 5 Phase 5.2 COMPLETE (5.2.1–5.2.4). Step 5.3.1 COMPLETE.
-  Stage 5 in progress (Steps 5.1.1, 5.1.2, 5.2.1–5.2.4, 5.3.1 done).
+- Current state: all unit tests pass (781 passed).
+- Stage 4 COMPLETE. Stage 5 Phase 5.1 COMPLETE. Phase 5.2 COMPLETE. Phase 5.3 COMPLETE.
+  Stage 5 fully complete (5.1.1, 5.1.2, 5.2.1–5.2.4, 5.3.1, 5.3.2 all done).
 - **Deployment target: AWS Lightsail** (decided 2026-06-07). Cloudflare is no
   longer the target. The architecture remains cloud-agnostic; only Stage 8
   content and Stage 9 provisioning changed in the plan. No code changes needed
   — all completed work was already cloud-agnostic.
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 5.3.2: Add Temporary Object And Workspace Cleanup.
+- Next step is Step 6.1.1: Add API And Processor Dockerfiles.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
@@ -2123,16 +2174,16 @@ Track A: switch AI provider now
 
 Track B: continue backend conversion (currently active)
 
-- Stage 4 is COMPLETE. Stage 5 Phase 5.1 is COMPLETE (5.1.1 + 5.1.2 done).
-  Phase 5.2 is COMPLETE (Steps 5.2.1–5.2.4). Step 5.3.1 is COMPLETE.
+- **Stage 5 is fully COMPLETE** (Phases 5.1, 5.2, 5.3 all done).
+  Steps 5.1.1, 5.1.2, 5.2.1–5.2.4, 5.3.1, 5.3.2 all verified.
 - **Deployment target changed to AWS Lightsail** (2026-06-07).
   - Stage 8 has been rewritten as "AWS Production Adapter Verification"
     (S3, RDS, Redis/SQS, Secrets Manager adapters).
   - Stage 9 provisioning updated for AWS resources.
   - Stage 8 (Cloudflare spike) is fully replaced — no work to carry forward.
-  - Nothing in Stages 1–5.3.1 needs to change.
-- Next step: Step 5.3.2 — Add Temporary Object And Workspace Cleanup.
-- Then local parity stack (Stage 6), hardening (Stage 7), AWS adapter
+  - Nothing in Stages 1–5 needs to change.
+- Next step: Step 6.1.1 — Add API And Processor Dockerfiles.
+- Then compose stack (Stage 6), hardening (Stage 7), AWS adapter
   verification (Stage 8), production deploy (Stage 9).
 
 Track C: stabilize and commit current work
