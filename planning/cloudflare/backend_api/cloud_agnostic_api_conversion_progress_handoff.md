@@ -1,6 +1,6 @@
 # Cloud-Agnostic API Conversion Progress Handoff
 
-Last updated: 2026-06-07 (session 3)
+Last updated: 2026-06-07 (session 4)
 
 This document summarizes what has been completed from
 `cloud_agnostic_api_conversion_stepwise_commit_plan.md`, why each part exists,
@@ -56,15 +56,15 @@ Completed through:
 - Stage 1
 - Stage 2
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
-- Stage 4 through Step 4.2.2
+- Stage 4 through Step 4.2.3
 
 Next step in the original plan:
 
-- Step 4.2.3: Add Bearer Token Auth
+- Step 4.2.4: Add CSRF, CORS, And Rate Limits
 
 Most recent verification:
 
-- Combined unit + safe integration: `398 passed, 3 skipped`
+- Combined unit + safe integration: `446 passed, 3 skipped`
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -978,6 +978,67 @@ Provider-switch relevance:
 
 - Not required for CLI provider switching.
 
+### Step 4.2.3: Add Bearer Token Auth
+
+What was done (strict TDD — tests written and confirmed failing before implementation):
+
+- Added `TokenId(prefix="tok")` to `domain/ids.py` and `domain/__init__.py`.
+- Added `BearerTokenRecord` dataclass to `application/ports/services.py`:
+  - Fields: `token_id`, `user_id`, `token_hash` (SHA-256), `name`, `description`,
+    `created_at`, `expires_at`, `revoked_at`, `last_used_at`.
+  - Same SHA-256-for-hash approach as session tokens: high-entropy random values
+    do not need bcrypt.
+  - `last_used_at` is `None` at creation; updated on every successful resolution.
+- Extended `MetadataStore` Protocol with:
+  - `create_bearer_token(record: BearerTokenRecord) -> None`
+  - `get_bearer_token_by_hash(token_hash: str) -> BearerTokenRecord | None`
+  - `get_bearer_token(token_id: TokenId) -> BearerTokenRecord | None`
+  - `update_bearer_token(record: BearerTokenRecord) -> None`
+  - `list_bearer_tokens_for_user(user_id: UserId) -> Sequence[BearerTokenRecord]`
+- Implemented all five new methods in `InMemoryMetadataStore`:
+  - Dual-index: `_bearer_tokens` (by `TokenId`) and `_bearer_tokens_by_hash` (by SHA-256).
+  - `update_bearer_token` keeps both indices in sync.
+- Created `src/urdu_pipeline/auth/bearer.py`:
+  - `create_bearer_token(store, *, user_id, name, description, expires_in) -> (raw_token, record)`
+  - `resolve_bearer_token(store, *, raw_token) -> AuthPrincipal | None`
+    — updates `last_used_at` in the store on every successful resolution.
+  - `revoke_bearer_token(store, *, token_id) -> None`
+    — raises `KeyError` for unknown `token_id` (surfaces as 404 in routes).
+  - Uses narrow `_BearerStore` and `_BearerRevokeStore` protocols for testability.
+- Updated `api/dependencies.py`:
+  - Added `get_principal_from_session` — resolves session cookie to `AuthPrincipal | None`.
+  - Added `get_principal_from_bearer` — resolves `Authorization: Bearer` header to `AuthPrincipal | None`.
+  - Added `require_principal` — accepts either session OR bearer; raises 401 if neither.
+  - Added `require_session_principal` — session cookie only; used on token management routes
+    so bearer tokens cannot mint more bearer tokens (prevents proliferation).
+- Created `src/urdu_pipeline/api/routes/tokens.py`:
+  - `POST /tokens` — create (requires session auth), returns raw token once.
+  - `GET /tokens` — list (accepts session OR bearer), never includes raw token or hash.
+  - `DELETE /tokens/{token_id}` — revoke (requires session auth), returns 404 for unknown/other-user tokens.
+- Included `tokens_router` in `api/app.py`.
+- Wrote `tests/unit/test_bearer_tokens.py` (22 tests) BEFORE implementation:
+  - Creation: raw token returned, SHA-256 hash stored, record retrievable, no revocation/last_used_at on creation.
+  - Resolution: valid token → `AuthPrincipal`; expired/revoked/unknown → None; `last_used_at` updated.
+  - Revocation: `revoked_at` stored; revoked token resolves to None; missing `token_id` raises `KeyError`.
+- Wrote `tests/unit/test_token_routes.py` (26 tests) BEFORE implementation:
+  - `POST /tokens`: 401 without auth, 200 with session, raw token in response, 422 on extra fields.
+  - `GET /tokens`: 401 without auth, 200 with session, raw token never in list, hash never in list.
+  - `DELETE /tokens/{id}`: 401 without auth, 200 on success, 404 for unknown token.
+  - Bearer auth: valid token authenticates GET /tokens; invalid/expired/revoked returns 401.
+- Test count: 446 passed, 3 skipped.
+
+Why it was needed:
+
+- Bearer tokens allow programmatic API access without a browser session (CI/CD, scripts).
+- Tokens are shown once so a DB breach cannot reveal live token values.
+- `last_used_at` gives operators audit visibility without exposing raw credentials.
+- `require_session_principal` on write routes prevents bearer tokens from being used to
+  create/revoke more tokens (no unbounded self-replication).
+
+Provider-switch relevance:
+
+- Not required for CLI provider switching.
+
 ## What Is Left In The Original Plan
 
 ## Remaining Stage 4 Work
@@ -986,7 +1047,6 @@ Provider-switch relevance:
 
 Remaining phases:
 
-- Bearer token auth (Step 4.2.3)
 - CSRF, CORS, rate limits (Step 4.2.4)
 
 Why needed:
@@ -1285,9 +1345,9 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- Current state: all unit and safe integration tests pass (398 passed, 3 skipped).
+- Current state: all unit and safe integration tests pass (446 passed, 3 skipped).
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 4.2.3: Add Bearer Token Auth.
+- Next step is Step 4.2.4: Add CSRF, CORS, And Rate Limits.
 - Preserve all prompt-safety and provider-request boundaries.
 - Run targeted tests before full suites.
 - Do not revert unrelated work.
@@ -1306,8 +1366,8 @@ Track A: switch AI provider now
 
 Track B: continue backend conversion (currently active)
 
-- Next step: Step 4.2.3 — Add Bearer Token Auth.
-- Then CSRF/CORS/rate limits (4.2.4).
+- Next step: Step 4.2.4 — Add CSRF, CORS, And Rate Limits.
+- Then resource routes (Step 4.3.x).
 - Then resource routes (Step 4.3.x).
 - Then processor (Stage 5) and local parity stack (Stage 6).
 

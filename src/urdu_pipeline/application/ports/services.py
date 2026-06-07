@@ -20,6 +20,7 @@ from urdu_pipeline.domain import (
     ServiceIdentityId,
     ServiceIdentityStatus,
     SessionId,
+    TokenId,
     UploadId,
     UploadStatus,
     UserId,
@@ -137,6 +138,27 @@ class SessionRecord:
 
 
 @dataclass(frozen=True)
+class BearerTokenRecord:
+    """A long-lived bearer token for programmatic API access.
+
+    ``token_hash`` is a SHA-256 hex digest of the raw token.  The raw token is
+    returned to the caller exactly once at creation time; only the hash is
+    persisted.  On each successful resolution ``last_used_at`` is updated so
+    operators can audit which tokens are in use.
+    """
+
+    token_id: TokenId
+    user_id: UserId
+    token_hash: str
+    name: str
+    description: str | None = None
+    created_at: datetime = field(default_factory=_utcnow)
+    expires_at: datetime | None = None
+    revoked_at: datetime | None = None
+    last_used_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class AuthPrincipal:
     principal_id: UserId | ServiceIdentityId
     kind: PrincipalKind
@@ -206,6 +228,16 @@ class MetadataStore(Protocol):
     def get_session_by_token_hash(self, token_hash: str) -> SessionRecord | None: ...
 
     def revoke_session(self, session_id: SessionId, *, revoked_at: datetime) -> None: ...
+
+    def create_bearer_token(self, record: BearerTokenRecord) -> None: ...
+
+    def get_bearer_token_by_hash(self, token_hash: str) -> BearerTokenRecord | None: ...
+
+    def get_bearer_token(self, token_id: TokenId) -> BearerTokenRecord | None: ...
+
+    def update_bearer_token(self, record: BearerTokenRecord) -> None: ...
+
+    def list_bearer_tokens_for_user(self, user_id: UserId) -> Sequence[BearerTokenRecord]: ...
 
     def create_service_identity(self, record: ServiceIdentityRecord) -> None: ...
 
@@ -358,6 +390,7 @@ __all__ = [
     "ArtifactRecord",
     "AuthPrincipal",
     "AuthService",
+    "BearerTokenRecord",
     "BudgetDecision",
     "BudgetService",
     "CacheEntry",

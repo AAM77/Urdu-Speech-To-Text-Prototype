@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from urdu_pipeline.api.dependencies import AppState
 from urdu_pipeline.api.routes.auth import router as auth_router
 from urdu_pipeline.api.routes.health import router as health_router
+from urdu_pipeline.api.routes.tokens import router as tokens_router
 
 
 def create_app(*, state: AppState | None = None) -> FastAPI:
@@ -29,6 +30,7 @@ def create_app(*, state: AppState | None = None) -> FastAPI:
 
     app.include_router(health_router)
     app.include_router(auth_router)
+    app.include_router(tokens_router)
 
     return app
 

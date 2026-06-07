@@ -104,6 +104,10 @@ class SessionId(DomainId):
     prefix = "ses"
 
 
+class TokenId(DomainId):
+    prefix = "tok"
+
+
 __all__ = [
     "ArtifactId",
     "CleanupTaskId",
@@ -114,6 +118,7 @@ __all__ = [
     "RunId",
     "ServiceIdentityId",
     "SessionId",
+    "TokenId",
     "UploadId",
     "UserId",
 ]

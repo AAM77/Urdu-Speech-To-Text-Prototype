@@ -12,6 +12,7 @@ from typing import BinaryIO, Mapping, Sequence
 
 from urdu_pipeline.application.ports import (
     ArtifactRecord,
+    BearerTokenRecord,
     BudgetDecision,
     BudgetService,
     CacheEntry,
@@ -49,6 +50,7 @@ from urdu_pipeline.domain import (
     RunId,
     ServiceIdentityId,
     SessionId,
+    TokenId,
     UploadId,
     UserId,
 )
@@ -248,6 +250,8 @@ class InMemoryMetadataStore:
         self._service_identities: dict[ServiceIdentityId, ServiceIdentityRecord] = {}
         self._sessions: dict[SessionId, SessionRecord] = {}
         self._sessions_by_token_hash: dict[str, SessionRecord] = {}
+        self._bearer_tokens: dict[TokenId, BearerTokenRecord] = {}
+        self._bearer_tokens_by_hash: dict[str, BearerTokenRecord] = {}
         self._uploads: dict[UploadId, UploadRecord] = {}
         self._runs: dict[RunId, RunRecord] = {}
         self._jobs: dict[JobId, JobRecord] = {}
@@ -306,6 +310,28 @@ class InMemoryMetadataStore:
         updated = dc_replace(existing, revoked_at=revoked_at)
         self._sessions[session_id] = updated
         self._sessions_by_token_hash[existing.token_hash] = updated
+
+    def create_bearer_token(self, record: BearerTokenRecord) -> None:
+        self._bearer_tokens[record.token_id] = record
+        self._bearer_tokens_by_hash[record.token_hash] = record
+
+    def get_bearer_token_by_hash(self, token_hash: str) -> BearerTokenRecord | None:
+        return self._bearer_tokens_by_hash.get(token_hash)
+
+    def get_bearer_token(self, token_id: TokenId) -> BearerTokenRecord | None:
+        return self._bearer_tokens.get(token_id)
+
+    def update_bearer_token(self, record: BearerTokenRecord) -> None:
+        if record.token_id not in self._bearer_tokens:
+            raise KeyError(f"bearer token not found: {record.token_id}")
+        self._bearer_tokens[record.token_id] = record
+        self._bearer_tokens_by_hash[record.token_hash] = record
+
+    def list_bearer_tokens_for_user(self, user_id: UserId) -> Sequence[BearerTokenRecord]:
+        return sorted(
+            [r for r in self._bearer_tokens.values() if r.user_id == user_id],
+            key=lambda r: r.created_at,
+        )
 
     def create_upload(self, record: UploadRecord) -> None:
         self._require_user(record.user_id)
