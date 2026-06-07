@@ -56,15 +56,15 @@ Completed through:
 - Stage 1
 - Stage 2
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
-- Stage 4 (complete) + Stage 5 through Step 5.2.2
+- Stage 4 (complete) + Stage 5 through Step 5.2.3
 
 Next step in the original plan:
 
-- Step 5.2.3: Run Transcription And Reconciliation
+- Step 5.2.4: Run Translation And Article Generation
 
 Most recent verification:
 
-- Combined unit + safe integration: `740 passed, 3 skipped`
+- Combined unit + safe integration: `753 passed, 3 skipped`
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -1149,6 +1149,77 @@ Provider-switch relevance:
 
 - Not required for CLI provider switching.
 
+### Step 5.2.3: Run Transcription And Reconciliation
+
+What was done:
+
+- Wrote `tests/unit/test_processor_transcriber.py` (13 tests) before any
+  implementation, covering all paths under TDD. Tests confirmed failing first.
+
+- Created `src/urdu_pipeline/processor/transcriber.py` with:
+  - `run_transcription_and_reconciliation(job_record, chunk_manifest, *,
+    metadata_store, artifact_repo, usage_ledger, chunk_transcriber_fn,
+    reconciler_fn) -> tuple[ArtifactReference, ArtifactReference]`
+    - Iterates through `chunk_manifest.chunks` in chunk_index order.
+    - **Before each chunk**: calls `_check_cancellation(job_record,
+      metadata_store)` — reads `metadata_store.get_job_by_id` and raises
+      `FatalJobError` if status is `CANCELLED`.
+    - Calls `chunk_transcriber_fn(chunk)` → `TranscriptionResult`.
+    - Appends `RawTranscriptChunk` to the accumulator.
+    - Records usage via `usage_ledger.record_usage(UsageRecord(...))` with
+      `user_id`, `run_id`, `job_id`, `model_id`, and `cost_usd` from
+      `result.actual_usage["cost_usd"]`.
+    - Builds `RawTranscriptArtifact` from all chunk results.
+    - Persists raw artifact via `artifact_repo.save_artifact(stage=TRANSCRIBER,
+      artifact_type=RAW_URDU_TRANSCRIPT)`.
+    - Calls `reconciler_fn(raw_artifact)` → `ReconciledTranscriptArtifact`.
+    - Persists reconciled artifact via `artifact_repo.save_artifact(
+      stage=TRANSCRIPT_RECONCILER, artifact_type=RECONCILED_URDU_TRANSCRIPT)`.
+    - Returns `(raw_ref, reconciled_ref)`.
+  - `_check_cancellation(job_record, metadata_store)` — isolated helper that
+    can be called at the start of the loop for each chunk.
+  - `_build_raw_artifact(chunk_manifest, raw_chunks)` — assembles the
+    `RawTranscriptArtifact` with a fresh `ArtifactManifest`.
+
+- Both `chunk_transcriber_fn` and `reconciler_fn` are injectable `Callable`
+  parameters, keeping the module unit-testable without ffmpeg or the network.
+
+- Tests cover:
+  - Returns two `ArtifactReference` instances.
+  - Raw ref has `stage=TRANSCRIBER`, `artifact_type=RAW_URDU_TRANSCRIPT`.
+  - Reconciled ref has `stage=TRANSCRIPT_RECONCILER`,
+    `artifact_type=RECONCILED_URDU_TRANSCRIPT`.
+  - Two artifacts saved to repo (raw + reconciled).
+  - Raw payload contains `chunks` list (3 chunks verified).
+  - Reconciled payload contains non-empty `full_text_urdu`.
+  - Artifact `user_id`/`run_id` matches the job.
+  - Usage recorded for each chunk (3 chunks → 3 usage records).
+  - Usage records have correct `user_id`, `run_id`, `job_id`.
+  - Zero chunks: no usage records.
+  - Pre-cancellation (CANCELLED before call): raises `FatalJobError`,
+    transcriber never called.
+  - Mid-run cancellation (cancelled after chunk 1): chunk 1 transcribed,
+    chunk 2 stopped before transcription.
+  - Zero chunks: two artifacts still saved (empty).
+
+- Test count: 753 passed, 3 skipped.
+
+Why it was needed:
+
+- Transcription is the core value-generating step. Wrapping it in the processor
+  with cancellation polling ensures long-running transcription jobs can be
+  interrupted cleanly.
+- Per-chunk usage recording keeps the cost ledger accurate even when jobs fail
+  partway through.
+- The injectable `chunk_transcriber_fn` / `reconciler_fn` pattern allows the
+  same orchestration logic to be tested without a real audio provider.
+
+Provider-switch relevance:
+
+- `chunk_transcriber_fn` is the exact injection point where a different AI
+  provider (e.g. Gemini, Whisper local, etc.) can be plugged in without
+  changing the processor orchestration logic.
+
 ### Step 5.2.2: Run Chunker And Persist Chunk Manifest
 
 What was done:
@@ -1883,14 +1954,14 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- Current state: all unit and safe integration tests pass (740 passed, 3 skipped).
-- Stage 4 COMPLETE. Stage 5 in progress (Steps 5.1.1, 5.1.2, 5.2.1, and 5.2.2 done).
+- Current state: all unit and safe integration tests pass (753 passed, 3 skipped).
+- Stage 4 COMPLETE. Stage 5 in progress (Steps 5.1.1, 5.1.2, 5.2.1, 5.2.2, and 5.2.3 done).
 - **Deployment target: AWS Lightsail** (decided 2026-06-07). Cloudflare is no
   longer the target. The architecture remains cloud-agnostic; only Stage 8
   content and Stage 9 provisioning changed in the plan. No code changes needed
   — all completed work was already cloud-agnostic.
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 5.2.3: Run Transcription And Reconciliation.
+- Next step is Step 5.2.4: Run Translation And Article Generation.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
@@ -1912,14 +1983,14 @@ Track A: switch AI provider now
 Track B: continue backend conversion (currently active)
 
 - Stage 4 is COMPLETE. Stage 5 Phase 5.1 is COMPLETE (5.1.1 + 5.1.2 done).
-  Steps 5.2.1 and 5.2.2 are also COMPLETE.
+  Steps 5.2.1, 5.2.2, and 5.2.3 are also COMPLETE.
 - **Deployment target changed to AWS Lightsail** (2026-06-07).
   - Stage 8 has been rewritten as "AWS Production Adapter Verification"
     (S3, RDS, Redis/SQS, Secrets Manager adapters).
   - Stage 9 provisioning updated for AWS resources.
   - Stage 8 (Cloudflare spike) is fully replaced — no work to carry forward.
-  - Nothing in Stages 1–5.2.2 needs to change.
-- Next step: Step 5.2.3 — Run Transcription And Reconciliation.
+  - Nothing in Stages 1–5.2.3 needs to change.
+- Next step: Step 5.2.4 — Run Translation And Article Generation.
 - Then pipeline integration (5.2.2–5.2.4), failure handling (5.3.x), local
   parity stack (Stage 6), hardening (Stage 7), AWS adapter verification
   (Stage 8), production deploy (Stage 9).
