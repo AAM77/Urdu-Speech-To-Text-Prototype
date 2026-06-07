@@ -333,7 +333,13 @@ Notes:
 - `OUTPUT_ROOT` is exported into the CLI process, so the Makefile and the app
   agree on where runs are created and resolved.
 
-### 5b. Streamlit UI
+### 5b. Local API-backed workflow
+
+The backend conversion also includes a local Docker Compose parity stack for
+API, processor, PostgreSQL, MinIO, Redis, and an optional Nginx proxy. See
+`docs/local_api_workflow.md` for setup commands and the API route workflow.
+
+### 5c. Streamlit UI
 
 ```bash
 streamlit run src/urdu_pipeline/ui/streamlit_app.py
@@ -344,7 +350,7 @@ Open the URL Streamlit prints (usually <http://localhost:8501>). The
 each artifact once it is ready. Per-stage tabs let you jump in or resume from
 any prior-stage artifact.
 
-### 5c. CLI (full pipeline)
+### 5d. CLI (full pipeline)
 
 ```bash
 python -m urdu_pipeline.cli run-all \
@@ -358,7 +364,7 @@ python -m urdu_pipeline.cli run-all \
 A new directory is created under `runs/<date>_<slug>_<id>/` containing every
 stage's JSON + Markdown output and a `exports/full_run_export.zip`.
 
-### 5d. CLI (per stage)
+### 5e. CLI (per stage)
 
 ```bash
 # Estimate only — no calls, no writes

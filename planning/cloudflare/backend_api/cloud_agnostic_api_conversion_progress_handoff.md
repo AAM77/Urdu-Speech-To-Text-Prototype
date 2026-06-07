@@ -1,6 +1,6 @@
 # Cloud-Agnostic API Conversion Progress Handoff
 
-Last updated: 2026-06-07 (session 9)
+Last updated: 2026-06-07 (session 10)
 
 This document summarizes what has been completed from
 `cloud_agnostic_api_conversion_stepwise_commit_plan.md`, why each part exists,
@@ -58,19 +58,21 @@ Completed through:
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
 - Stage 4 (complete)
 - Stage 5 (complete)
-- Stage 6 through Step 6.2.1
+- Stage 6 through Step 6.2.2
 
 Next step in the original plan:
 
-- Stage 6: Step 6.2.2 — Add Local Workflow Documentation
+- Stage 6: Step 6.2.3 — Add Compose Fake-Provider E2E Test
 
 Most recent verification:
 
-- Combined unit + safe integration: `813 passed, 3 skipped`
+- Combined unit + safe integration: `815 passed, 3 skipped`
 - Targeted container packaging tests: `3 passed`
 - Targeted Compose service tests: `5 passed`
 - Targeted Compose + Makefile tests: `26 passed`
 - Makefile local stack tests: `21 passed`
+- Local workflow docs tests: `2 passed`
+- Targeted docs + compose + Makefile tests: `28 passed`
 - `make --no-print-directory -n compose-setup`: passed dry-run command review
 - `make --no-print-directory -n compose-test`: passed dry-run command review
 - `docker compose --env-file .env.local.example --profile proxy config`: passed
@@ -1297,6 +1299,66 @@ Needed for provider switch only?
 
 - No. This is local parity/backend workflow infrastructure.
 
+### Step 6.2.2: Add Local Workflow Documentation
+
+What was done (TDD-style documentation validation):
+
+- Added `tests/unit/test_local_workflow_docs.py` before writing the document.
+- The red run failed for expected reasons:
+  - `docs/local_api_workflow.md` did not exist.
+  - `README.md` did not link to the local API workflow doc.
+- Added `docs/local_api_workflow.md` covering:
+  - fake-provider mode as the local default;
+  - `make compose-setup`, `make compose-test`, and `make compose-down`;
+  - `SERVICE_AUTH_TOKEN` and local-only secret guidance;
+  - session login with `POST /auth/login`;
+  - CSRF cookie/header handling with `csrf_token`;
+  - bearer token creation with `POST /tokens`;
+  - direct upload with `POST /uploads/direct`;
+  - signed upload with `POST /uploads/init` plus completion;
+  - run creation with `POST /runs`;
+  - polling with `GET /runs/{run_id}` and `GET /runs/{run_id}/events`;
+  - artifact listing, metadata, and signed downloads via
+    `GET /runs/{run_id}/artifacts`, `GET /artifacts/{artifact_id}`, and
+    `GET /artifacts/{artifact_id}/download`;
+  - cancellation with `POST /runs/{run_id}/cancel`;
+  - retry and cleanup behavior from the processor lifecycle/idempotency/cleanup
+    modules;
+  - object-key non-disclosure and opaque server-side object key derivation;
+  - current local limitations: API container lacks env-built production
+    `AppState`, processor command shell is still dry-run, and full compose E2E
+    remains Step 6.2.3.
+- Updated `README.md` with a short "Local API-backed workflow" section that
+  links to `docs/local_api_workflow.md`.
+
+Verification:
+
+- Red documentation test before implementation:
+  `.venv/bin/python -m pytest tests/unit/test_local_workflow_docs.py -q`
+  failed with 2 expected missing-doc/link failures.
+- Targeted documentation test after implementation:
+  `.venv/bin/python -m pytest tests/unit/test_local_workflow_docs.py -q`
+  passed (`2 passed`).
+- Targeted docs + compose + Makefile tests:
+  `.venv/bin/python -m pytest tests/unit/test_local_workflow_docs.py tests/unit/test_compose_services.py tests/integration_safe/test_makefile.py -q`
+  passed (`28 passed`).
+- Full local unit + safe integration suite:
+  `.venv/bin/python -m pytest tests/unit tests/integration_safe -q`
+  passed (`815 passed, 3 skipped`).
+- `git diff --check` passed.
+
+Why it was needed:
+
+- The local stack now has a single operator/client workflow reference for
+  setup, auth, uploads, run lifecycle, artifact retrieval, cancellation, retry,
+  and cleanup behavior.
+- The doc explicitly distinguishes implemented route contracts from current
+  runtime limitations, preventing false confidence before Step 6.2.3.
+
+Needed for provider switch only?
+
+- No. This is local API/backend workflow documentation.
+
 ## Later Completed Steps And Remaining Plan Status
 
 ### Step 4.2.4: Add CSRF, CORS, And Rate Limits
@@ -2136,7 +2198,6 @@ Make Docker Compose behave like the target backend stack.
 
 Remaining phases:
 
-- workflow docs
 - compose fake-provider E2E test
 
 Why needed:
@@ -2369,14 +2430,14 @@ Give the next AI these files first:
 Tell the next AI explicitly:
 
 - Current state: all local unit and safe integration tests pass
-  (`813 passed, 3 skipped`).
-- Stage 4 COMPLETE. Stage 5 COMPLETE. Stage 6 Steps 6.1.1, 6.1.2, and 6.2.1 COMPLETE.
+  (`815 passed, 3 skipped`).
+- Stage 4 COMPLETE. Stage 5 COMPLETE. Stage 6 Steps 6.1.1, 6.1.2, 6.2.1, and 6.2.2 COMPLETE.
 - **Deployment target: AWS Lightsail** (decided 2026-06-07). Cloudflare is no
   longer the target. The architecture remains cloud-agnostic; only Stage 8
   content and Stage 9 provisioning changed in the plan. No code changes needed
   — all completed work was already cloud-agnostic.
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 6.2.2: Add Local Workflow Documentation.
+- Next step is Step 6.2.3: Add Compose Fake-Provider E2E Test.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
@@ -2412,14 +2473,16 @@ Track B: continue backend conversion (currently active)
 - **Stage 6 Step 6.2.1 is COMPLETE** (local API/processor dev targets, compose
   up/down/test, setup targets for migrations, bucket, user, service identity,
   and provider config).
+- **Stage 6 Step 6.2.2 is COMPLETE** (local API workflow documentation and
+  documentation coverage tests).
 - **Deployment target changed to AWS Lightsail** (2026-06-07).
   - Stage 8 has been rewritten as "AWS Production Adapter Verification"
     (S3, RDS, Redis/SQS, Secrets Manager adapters).
   - Stage 9 provisioning updated for AWS resources.
   - Stage 8 (Cloudflare spike) is fully replaced — no work to carry forward.
   - Nothing in Stages 1–5 needs to change.
-- Next step: Step 6.2.2 — Add Local Workflow Documentation.
-- Then Stage 6 E2E, hardening (Stage 7), AWS adapter
+- Next step: Step 6.2.3 — Add Compose Fake-Provider E2E Test.
+- Then hardening (Stage 7), AWS adapter
   verification (Stage 8), production deploy (Stage 9).
 
 Track C: stabilize and commit current work
