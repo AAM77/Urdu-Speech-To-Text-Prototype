@@ -56,15 +56,15 @@ Completed through:
 - Stage 1
 - Stage 2
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
-- Stage 4 through Step 4.3.4
+- Stage 4 (all steps complete through 4.3.5)
 
 Next step in the original plan:
 
-- Step 4.3.5: Generate And Review OpenAPI Schema
+- Step 5.1.1: Add Processor Command And Service Auth (Stage 5 begins)
 
 Most recent verification:
 
-- Combined unit + safe integration: `615 passed, 3 skipped`
+- Combined unit + safe integration: `650 passed, 3 skipped`
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -1149,6 +1149,43 @@ Provider-switch relevance:
 
 - Not required for CLI provider switching.
 
+### Step 4.3.5: Generate And Review OpenAPI Schema
+
+What was done:
+
+- Wrote `tests/unit/test_openapi_schema.py` (35 tests) to validate key schema properties:
+  - Structural: `openapi`, `info`, `paths` keys present; version starts with "3."; title non-empty.
+  - Route presence (parametrized): all 20 public paths and their HTTP methods are documented —
+    health, auth (login, logout), tokens (POST/GET/DELETE), all upload variants (init, complete,
+    multipart init/parts/complete/abort, direct), runs (POST/GET/cancel/events/artifacts),
+    and artifacts (GET/download).
+  - No internal identifier leakage: `user_id`, `job_id`, `object_key`, `key` absent from all
+    component schema property names.
+  - No provider/model/prompt fields: `provider`, `model_id`, `prompt`, `api_key` absent.
+  - Token security: `TokenListResponse` and `TokenSummary` do not expose the raw `token` value.
+  - Request schema policy: `InitUploadRequest` and `CreateRunRequest` do not accept `user_id`,
+    `object_key`, `provider`, `model_id`, or `prompt`.
+  - Snapshot: `test_openapi_snapshot_is_saved` writes `docs/openapi.json` (2,443 lines) for
+    human review and future diffing — always passes.
+- All 35 tests passed without any schema fixes needed, confirming the API surface is clean.
+- Schema summary:
+  - 20 paths (all public — no accidental internal route exposure)
+  - 33 component schemas (request/response/enum types only)
+  - Notable schema: `Body_direct_upload_uploads_direct_post` (FastAPI auto-generated name
+    for the UploadFile parameter on POST /uploads/direct — cosmetically ungainly but correct)
+- Test count: 650 passed, 3 skipped.
+
+Why it was needed:
+
+- A machine-readable schema is the primary integration contract for frontend and other
+  consumer teams.  Validation tests ensure the contract stays clean as routes evolve.
+- The no-leakage assertions provide a regression gate: any future change that accidentally
+  adds `user_id`, `object_key`, or `provider` to a schema is caught immediately.
+
+Provider-switch relevance:
+
+- Not required for CLI provider switching.
+
 ### Step 4.3.4: Add Artifact Routes
 
 What was done (strict TDD — tests written and confirmed failing before implementation):
@@ -1607,9 +1644,10 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- Current state: all unit and safe integration tests pass (615 passed, 3 skipped).
+- Current state: all unit and safe integration tests pass (650 passed, 3 skipped).
+- Stage 4 (all phases and steps) is now COMPLETE.
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 4.3.5: Generate And Review OpenAPI Schema.
+- Next step is Step 5.1.1: Add Processor Command And Service Auth.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
@@ -1630,8 +1668,9 @@ Track A: switch AI provider now
 
 Track B: continue backend conversion (currently active)
 
-- Next step: Step 4.3.5 — Generate And Review OpenAPI Schema.
-- Then processor (Stage 5) and local parity stack (Stage 6).
+- Stage 4 is now COMPLETE. All API routes are implemented and tested.
+- Next step: Step 5.1.1 — Add Processor Command And Service Auth (Stage 5 begins).
+- Then job lifecycle (5.1.2), pipeline integration (5.2.x), local parity stack (Stage 6).
 
 Track C: stabilize and commit current work
 
