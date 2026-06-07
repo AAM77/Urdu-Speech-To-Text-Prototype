@@ -66,6 +66,14 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
     prompt_version: str = Field(default="v1")
 
+    # ---- Local metadata database ----
+    database_url: str = Field(
+        default=(
+            "postgresql://urdu_pipeline:urdu_pipeline_local_password"
+            "@localhost:5432/urdu_pipeline"
+        )
+    )
+
     # -------------------------------------------------------------------------
     # Validators / derived helpers
     # -------------------------------------------------------------------------

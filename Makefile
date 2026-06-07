@@ -13,6 +13,7 @@ RUNS_DIR ?= $(OUTPUT_ROOT)
 CONFIRM_PAID_RUN ?= 0
 CHUNK_LENGTH_SECONDS ?=
 OVERLAP_SECONDS ?=
+DATABASE_URL ?= postgresql://urdu_pipeline:urdu_pipeline_local_password@localhost:5432/urdu_pipeline
 
 export OUTPUT_ROOT
 
@@ -20,7 +21,7 @@ PAID_FLAG = $(if $(filter 1 true TRUE yes YES y Y,$(CONFIRM_PAID_RUN)),--confirm
 CHUNK_LENGTH_FLAG = $(if $(strip $(CHUNK_LENGTH_SECONDS)),--chunk-length-seconds $(CHUNK_LENGTH_SECONDS),)
 OVERLAP_FLAG = $(if $(strip $(OVERLAP_SECONDS)),--overlap-seconds $(OVERLAP_SECONDS),)
 
-.PHONY: help latest-run chunk transcribe reconcile translate article to-transcribe to-reconcile to-translate to-article compose-up compose-test
+.PHONY: help latest-run chunk transcribe reconcile translate article to-transcribe to-reconcile to-translate to-article migrate-db compose-up compose-test
 
 REQUIRE_AUDIO = if [[ -z "$(AUDIO)" ]]; then echo "AUDIO is required. Example: make $@ AUDIO='inputs/example.mp3'"; exit 1; fi
 RESOLVE_RUN_DIR = run_dir="$(RUN_DIR)"; if [[ -z "$$run_dir" ]]; then run_dir="$$(ls -td "$(RUNS_DIR)"/* 2>/dev/null | head -n1 || true)"; fi; if [[ -z "$$run_dir" ]]; then echo "No run directory found under $(RUNS_DIR). Pass RUN_DIR=... or create one with: make chunk AUDIO='inputs/example.mp3'"; exit 1; fi; echo "Using run directory: $$run_dir"
@@ -52,6 +53,7 @@ help:
 		'  PYTHON=.venv/bin/python    overrides the interpreter used' \
 		'' \
 		'Local API stack placeholders' \
+		'  make migrate-db            run PostgreSQL metadata migrations' \
 		'  make compose-up            reserved for the future local API stack' \
 		'  make compose-test          reserved for future local stack tests' \
 		'' \
@@ -72,6 +74,9 @@ compose-test:
 	echo "compose-test is not implemented yet."; \
 	echo "The local stack skeleton can be validated with: docker compose --env-file .env.local.example config"; \
 	exit 2
+
+migrate-db:
+	set -euo pipefail; $(CLI) migrate-db --database-url "$(DATABASE_URL)"
 
 chunk:
 	set -euo pipefail; $(REQUIRE_AUDIO); $(CLI) chunk --audio "$(AUDIO)" $(CHUNK_LENGTH_FLAG) $(OVERLAP_FLAG)

@@ -25,6 +25,7 @@ from urdu_pipeline.costs.estimator import (
     estimate_transcription_cost,
     rough_token_count,
 )
+from urdu_pipeline.infrastructure.db.migrations import connect_postgres, run_migrations
 from urdu_pipeline.stages.article_generator import run_article_stage
 from urdu_pipeline.stages.chunker import (
     probe_audio_duration_seconds,
@@ -291,6 +292,34 @@ def export_run(
     store = ArtifactStore.for_existing_run(run_dir)
     target = export_run_zip(store.paths, include_chunks=include_chunks)
     console.print(f"[green]Exported:[/] {target}")
+
+
+@app.command(name="migrate-db")
+def migrate_db(
+    database_url: Optional[str] = typer.Option(
+        None,
+        "--database-url",
+        help="PostgreSQL connection URL. Defaults to DATABASE_URL from settings.",
+    ),
+) -> None:
+    """Run PostgreSQL metadata migrations."""
+    target_url = database_url or get_settings().database_url
+    connection = None
+    try:
+        connection = connect_postgres(target_url)
+        report = run_migrations(connection)
+    except Exception as exc:
+        console.print(f"[red]Migration failed:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+    console.print(
+        "[green]Migrations complete.[/] "
+        f"applied={len(report.applied_versions)} "
+        f"skipped={len(report.skipped_versions)}"
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

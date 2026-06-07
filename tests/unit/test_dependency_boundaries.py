@@ -26,7 +26,7 @@ def _dependency_names(dependencies: list[str]) -> set[str]:
 
 def test_optional_dependencies_are_split_by_runtime_boundary():
     pyproject = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
-    required_extras = {"core", "cli", "ui", "api", "processor", "dev"}
+    required_extras = {"core", "cli", "ui", "api", "processor", "db", "dev"}
     optional = pyproject["project"]["optional-dependencies"]
 
     assert required_extras.issubset(optional)
@@ -42,7 +42,9 @@ def test_optional_dependencies_are_split_by_runtime_boundary():
     )
     assert {"typer", "rich"}.issubset(_dependency_names(optional["cli"]))
     assert {"streamlit"}.issubset(_dependency_names(optional["ui"]))
-    assert {"openai"}.issubset(_dependency_names(optional["processor"]))
+    assert {"psycopg"}.issubset(_dependency_names(optional["api"]))
+    assert {"openai", "psycopg"}.issubset(_dependency_names(optional["processor"]))
+    assert {"psycopg"}.issubset(_dependency_names(optional["db"]))
     assert {"pytest", "pytest-mock"}.issubset(_dependency_names(optional["dev"]))
 
 

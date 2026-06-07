@@ -47,9 +47,15 @@ cli = [
 ui = [
     "streamlit>=1.55,<2",
 ]
-api = []
+api = [
+    "psycopg[binary]>=3.2,<4",
+]
 processor = [
     "openai>=2.30,<3",
+    "psycopg[binary]>=3.2,<4",
+]
+db = [
+    "psycopg[binary]>=3.2,<4",
 ]
 dev = [
     "pydantic>=2.13,<3",
@@ -61,6 +67,7 @@ dev = [
     "rich>=14.3,<16",
     "streamlit>=1.55,<2",
     "openai>=2.30,<3",
+    "psycopg[binary]>=3.2,<4",
     "pytest>=9.0,<10",
     "pytest-mock>=3.14,<4",
 ]
@@ -73,6 +80,9 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"urdu_pipeline.infrastructure.db.migration_files" = ["*.sql"]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"
