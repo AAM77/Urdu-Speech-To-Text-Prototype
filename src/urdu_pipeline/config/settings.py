@@ -74,6 +74,16 @@ class Settings(BaseSettings):
         )
     )
 
+    # ---- S3-compatible object store ----
+    object_store_endpoint_url: str | None = Field(default=None)
+    object_store_bucket: str = Field(default="urdu-pipeline-local")
+    object_store_region: str = Field(default="us-east-1")
+    object_store_access_key: str | None = Field(default=None)
+    object_store_secret_key: str | None = Field(default=None)
+
+    # ---- Job queue ----
+    redis_url: str = Field(default="redis://localhost:6379/0")
+
     # -------------------------------------------------------------------------
     # Validators / derived helpers
     # -------------------------------------------------------------------------

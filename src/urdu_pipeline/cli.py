@@ -25,7 +25,14 @@ from urdu_pipeline.costs.estimator import (
     estimate_transcription_cost,
     rough_token_count,
 )
+from urdu_pipeline.admin.seed import (
+    seed_bucket,
+    seed_provider_config,
+    seed_service_identity,
+    seed_user,
+)
 from urdu_pipeline.infrastructure.db.migrations import connect_postgres, run_migrations
+from urdu_pipeline.infrastructure.db.metadata import PostgresMetadataStore
 from urdu_pipeline.stages.article_generator import run_article_stage
 from urdu_pipeline.stages.chunker import (
     probe_audio_duration_seconds,
@@ -320,6 +327,159 @@ def migrate_db(
         f"applied={len(report.applied_versions)} "
         f"skipped={len(report.skipped_versions)}"
     )
+
+
+@app.command(name="seed-user")
+def seed_user_cmd(
+    username: str = typer.Option(..., "--username", help="Username for the new user."),
+    database_url: Optional[str] = typer.Option(
+        None,
+        "--database-url",
+        help="PostgreSQL connection URL. Defaults to DATABASE_URL from settings.",
+    ),
+) -> None:
+    """Create a pre-configured active user in the metadata database."""
+    target_url = database_url or get_settings().database_url
+    connection = None
+    try:
+        connection = connect_postgres(target_url)
+        store = PostgresMetadataStore(connection)
+        record = seed_user(store, username=username)
+    except Exception as exc:
+        console.print(f"[red]seed-user failed:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        if connection is not None:
+            connection.close()
+    console.print(f"[green]User created.[/] user_id={record.user_id} username={record.username}")
+
+
+@app.command(name="seed-service-identity")
+def seed_service_identity_cmd(
+    name: str = typer.Option(..., "--name", help="Name for the service identity."),
+    database_url: Optional[str] = typer.Option(
+        None,
+        "--database-url",
+        help="PostgreSQL connection URL. Defaults to DATABASE_URL from settings.",
+    ),
+) -> None:
+    """Create a pre-configured active service identity in the metadata database."""
+    target_url = database_url or get_settings().database_url
+    connection = None
+    try:
+        connection = connect_postgres(target_url)
+        store = PostgresMetadataStore(connection)
+        record = seed_service_identity(store, name=name)
+    except Exception as exc:
+        console.print(f"[red]seed-service-identity failed:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        if connection is not None:
+            connection.close()
+    console.print(
+        f"[green]Service identity created.[/] "
+        f"service_identity_id={record.service_identity_id} name={record.name}"
+    )
+
+
+@app.command(name="seed-provider-config")
+def seed_provider_config_cmd(
+    provider_name: str = typer.Option(
+        None,
+        "--provider-name",
+        help="Provider name (e.g. 'fake' or 'openai'). Defaults to 'fake'.",
+    ),
+    database_url: Optional[str] = typer.Option(
+        None,
+        "--database-url",
+        help="PostgreSQL connection URL. Defaults to DATABASE_URL from settings.",
+    ),
+) -> None:
+    """Seed a provider config snapshot from current settings into the metadata database."""
+    s = get_settings()
+    target_url = database_url or s.database_url
+    effective_provider = provider_name or ("openai" if s.pipeline_provider_mode == "real" else "fake")
+    model_roles = {
+        "transcription": s.transcription_model,
+        "translation": s.translation_model,
+        "article": s.article_model,
+        "reconciliation": s.reconciliation_model,
+    }
+    connection = None
+    try:
+        connection = connect_postgres(target_url)
+        store = PostgresMetadataStore(connection)
+        snapshot = seed_provider_config(
+            store,
+            provider_name=effective_provider,
+            model_roles=model_roles,
+        )
+    except Exception as exc:
+        console.print(f"[red]seed-provider-config failed:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        if connection is not None:
+            connection.close()
+    console.print(
+        f"[green]Provider config created.[/] "
+        f"config_version_id={snapshot.config_version_id} "
+        f"provider={snapshot.provider_name} "
+        f"roles={dict(snapshot.model_roles)}"
+    )
+
+
+@app.command(name="seed-bucket")
+def seed_bucket_cmd(
+    bucket: Optional[str] = typer.Option(
+        None,
+        "--bucket",
+        help="Bucket name. Defaults to OBJECT_STORE_BUCKET from settings.",
+    ),
+    endpoint_url: Optional[str] = typer.Option(
+        None,
+        "--endpoint-url",
+        help="Object store endpoint URL. Defaults to OBJECT_STORE_ENDPOINT_URL from settings.",
+    ),
+    region: Optional[str] = typer.Option(
+        None,
+        "--region",
+        help="Bucket region. Defaults to OBJECT_STORE_REGION from settings.",
+    ),
+) -> None:
+    """Ensure the S3/MinIO bucket exists, creating it if necessary."""
+    import importlib
+
+    s = get_settings()
+    effective_bucket = bucket or s.object_store_bucket
+    effective_endpoint = endpoint_url or s.object_store_endpoint_url
+    effective_region = region or s.object_store_region
+
+    try:
+        boto3 = importlib.import_module("boto3")
+    except ModuleNotFoundError as exc:
+        console.print(
+            "[red]boto3 is required for seed-bucket.[/] "
+            "Install the `object-store` extra: pip install -e '.[object-store]'"
+        )
+        raise typer.Exit(code=1) from exc
+
+    try:
+        client = boto3.client(
+            "s3",
+            endpoint_url=effective_endpoint or None,
+            region_name=effective_region,
+            aws_access_key_id=s.object_store_access_key or None,
+            aws_secret_access_key=s.object_store_secret_key or None,
+        )
+        created = seed_bucket(client=client, bucket=effective_bucket, region=effective_region)
+    except Exception as exc:
+        console.print(f"[red]seed-bucket failed:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if created:
+        console.print(f"[green]Bucket created:[/] {effective_bucket}")
+    else:
+        console.print(f"[yellow]Bucket already exists:[/] {effective_bucket}")
 
 
 if __name__ == "__main__":  # pragma: no cover
