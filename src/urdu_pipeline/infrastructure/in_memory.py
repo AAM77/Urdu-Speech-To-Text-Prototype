@@ -4,27 +4,52 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import BinaryIO, Sequence
+from typing import BinaryIO, Mapping, Sequence
 
 from urdu_pipeline.application.ports import (
     ArtifactRecord,
+    BudgetDecision,
+    BudgetService,
+    CacheEntry,
+    CacheScope,
+    CacheStore,
     JobRecord,
+    JobLease,
+    JobQueue,
     MetadataStore,
     MultipartPart,
     MultipartUpload,
     ObjectInfo,
     ObjectMetadata,
     ObjectStore,
+    ProviderConfigSnapshot,
+    ProviderRegistry,
+    QueueMessage,
     RunRecord,
     ServiceIdentityRecord,
+    SecretProvider,
+    SecretValue,
     SignedUrl,
     UploadRecord,
+    UsageLedger,
+    UsageRecord,
     UserRecord,
 )
-from urdu_pipeline.domain import ArtifactId, JobId, RunId, ServiceIdentityId, UploadId, UserId
+from urdu_pipeline.domain import (
+    ArtifactId,
+    JobId,
+    ProviderConfigStatus,
+    ProviderConfigVersionId,
+    ProviderRunId,
+    RunId,
+    ServiceIdentityId,
+    UploadId,
+    UserId,
+)
 
 
 @dataclass(frozen=True)
@@ -296,4 +321,301 @@ class InMemoryMetadataStore:
             raise ValueError(f"run does not exist for user: {run_id}")
 
 
-__all__ = ["InMemoryMetadataStore", "InMemoryObjectStore"]
+_SAFE_ROUTING_KEYS = {
+    "correlation_id",
+    "lease_hint",
+    "priority",
+    "queue",
+    "retry_hint",
+    "stage",
+}
+_SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_:-]{0,127}$")
+_CACHE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+
+def _validate_routing(routing: Mapping[str, str]) -> dict[str, str]:
+    safe: dict[str, str] = {}
+    for key, value in routing.items():
+        if key not in _SAFE_ROUTING_KEYS:
+            raise ValueError(f"unsafe routing metadata key: {key}")
+        if not isinstance(value, str) or not _SAFE_SEGMENT_RE.fullmatch(value):
+            raise ValueError(f"unsafe routing metadata value for {key}")
+        safe[key] = value
+    return safe
+
+
+def _validate_cache_segment(field: str, value: str) -> str:
+    if not isinstance(value, str) or not _CACHE_SEGMENT_RE.fullmatch(value):
+        raise ValueError(
+            f"{field} must be a non-empty cache segment containing only "
+            "letters, numbers, underscores, and hyphens."
+        )
+    return value
+
+
+class InMemoryJobQueue:
+    """JobQueue implementation backed by process memory."""
+
+    def __init__(self) -> None:
+        self._queued: list[QueueMessage] = []
+        self._leases: dict[str, JobLease] = {}
+        self._attempts: dict[JobId, int] = {}
+        self._cancelled_jobs: set[JobId] = set()
+        self._terminal_failures: dict[JobId, str] = {}
+        self._dead_letters: dict[JobId, str] = {}
+
+    def enqueue(self, message: QueueMessage) -> None:
+        routing = _validate_routing(message.routing)
+        if self._is_terminal(message.job_id):
+            return
+        self._queued.append(QueueMessage(job_id=message.job_id, routing=routing))
+
+    def claim(
+        self,
+        *,
+        worker_id: ServiceIdentityId,
+        lease_seconds: int,
+    ) -> JobLease | None:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive.")
+        while self._queued:
+            message = self._queued.pop(0)
+            if self._is_terminal(message.job_id):
+                continue
+            attempt_number = self._attempts.get(message.job_id, 0) + 1
+            self._attempts[message.job_id] = attempt_number
+            lease = JobLease(
+                job_id=message.job_id,
+                lease_id=uuid.uuid4().hex,
+                attempt_number=attempt_number,
+                expires_at=datetime.now(tz=timezone.utc) + timedelta(seconds=lease_seconds),
+                routing=dict(message.routing),
+            )
+            self._leases[lease.lease_id] = lease
+            return lease
+        return None
+
+    def extend_lease(
+        self,
+        lease: JobLease,
+        *,
+        lease_seconds: int,
+    ) -> JobLease:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive.")
+        self._require_lease(lease)
+        extended = JobLease(
+            job_id=lease.job_id,
+            lease_id=lease.lease_id,
+            attempt_number=lease.attempt_number,
+            expires_at=datetime.now(tz=timezone.utc) + timedelta(seconds=lease_seconds),
+            routing=dict(lease.routing),
+        )
+        self._leases[lease.lease_id] = extended
+        return extended
+
+    def retry(self, lease: JobLease, *, reason: str) -> None:
+        active = self._require_lease(lease)
+        del self._leases[active.lease_id]
+        if not self._is_terminal(active.job_id):
+            self._queued.append(
+                QueueMessage(job_id=active.job_id, routing=dict(active.routing))
+            )
+
+    def mark_terminal_failure(self, lease: JobLease, *, reason: str) -> None:
+        active = self._require_lease(lease)
+        del self._leases[active.lease_id]
+        self._terminal_failures[active.job_id] = reason
+
+    def cancel(self, job_id: JobId, *, reason: str) -> None:
+        self._cancelled_jobs.add(job_id)
+        self._queued = [message for message in self._queued if message.job_id != job_id]
+        for lease_id, lease in list(self._leases.items()):
+            if lease.job_id == job_id:
+                del self._leases[lease_id]
+
+    def dead_letter(self, lease: JobLease, *, reason: str) -> None:
+        active = self._require_lease(lease)
+        del self._leases[active.lease_id]
+        self._dead_letters[active.job_id] = reason
+
+    def _require_lease(self, lease: JobLease) -> JobLease:
+        active = self._leases.get(lease.lease_id)
+        if active is None or active.job_id != lease.job_id:
+            raise KeyError(f"active lease not found: {lease.lease_id}")
+        return active
+
+    def _is_terminal(self, job_id: JobId) -> bool:
+        return (
+            job_id in self._cancelled_jobs
+            or job_id in self._terminal_failures
+            or job_id in self._dead_letters
+        )
+
+
+class InMemoryCacheStore:
+    """CacheStore implementation with explicit user scope."""
+
+    def __init__(self) -> None:
+        self._entries: dict[tuple[UserId, str, str], CacheEntry] = {}
+
+    def get(self, scope: CacheScope, key: str) -> CacheEntry | None:
+        return self._entries.get(self._cache_key(scope, key))
+
+    def put(self, scope: CacheScope, key: str, payload: Mapping[str, object]) -> CacheEntry:
+        cache_key = self._cache_key(scope, key)
+        entry = CacheEntry(scope=scope, key=cache_key[2], payload=dict(payload))
+        self._entries[cache_key] = entry
+        return entry
+
+    def delete(self, scope: CacheScope, key: str) -> bool:
+        return self._entries.pop(self._cache_key(scope, key), None) is not None
+
+    def _cache_key(self, scope: CacheScope, key: str) -> tuple[UserId, str, str]:
+        scope_name = _validate_cache_segment("scope", scope.name)
+        safe_key = _validate_cache_segment("cache_key", key)
+        return (scope.user_id, scope_name, safe_key)
+
+
+class InMemorySecretProvider:
+    """SecretProvider implementation backed by an explicit secret mapping."""
+
+    def __init__(self, secrets: Mapping[str, str] | None = None) -> None:
+        self._secrets = dict(secrets or {})
+
+    def get_secret(self, name: str) -> SecretValue:
+        if name not in self._secrets:
+            raise KeyError(f"secret is not configured: {name}")
+        return SecretValue(name=name, value=self._secrets[name])
+
+
+class InMemoryProviderRegistry:
+    """ProviderRegistry implementation for local tests."""
+
+    def __init__(self, active_config: ProviderConfigSnapshot | None = None) -> None:
+        self._active_config = active_config or ProviderConfigSnapshot(
+            config_version_id=ProviderConfigVersionId.new(),
+            status=ProviderConfigStatus.ACTIVE,
+            provider_name="fake",
+            model_roles={
+                "article": "fake-text",
+                "reconciliation": "fake-text",
+                "transcription": "fake-transcribe",
+                "translation": "fake-text",
+            },
+            prompt_versions={},
+        )
+        self._configs = {self._active_config.config_version_id: self._active_config}
+
+    def get_active_config(self) -> ProviderConfigSnapshot:
+        return self._active_config
+
+    def get_config(
+        self,
+        config_version_id: ProviderConfigVersionId,
+    ) -> ProviderConfigSnapshot | None:
+        return self._configs.get(config_version_id)
+
+    def model_for_role(
+        self,
+        config_version_id: ProviderConfigVersionId,
+        role: str,
+    ) -> str:
+        config = self.get_config(config_version_id)
+        if config is None:
+            raise KeyError(f"provider config not found: {config_version_id}")
+        return config.model_roles[role]
+
+
+class InMemoryUsageLedger:
+    """UsageLedger implementation backed by process memory."""
+
+    def __init__(self) -> None:
+        self._records: list[UsageRecord] = []
+
+    def record_usage(self, record: UsageRecord) -> None:
+        if record.cost_usd < 0:
+            raise ValueError("usage cost_usd must be non-negative.")
+        self._records.append(record)
+
+    def list_run_usage(self, *, user_id: UserId, run_id: RunId) -> Sequence[UsageRecord]:
+        return [
+            record
+            for record in self._records
+            if record.user_id == user_id and record.run_id == run_id
+        ]
+
+    def total_run_cost_usd(self, *, user_id: UserId, run_id: RunId) -> float:
+        return round(
+            sum(
+                record.cost_usd
+                for record in self.list_run_usage(user_id=user_id, run_id=run_id)
+            ),
+            6,
+        )
+
+
+class InMemoryBudgetService:
+    """BudgetService implementation backed by an in-memory usage ledger."""
+
+    def __init__(
+        self,
+        *,
+        usage_ledger: InMemoryUsageLedger | None = None,
+        hard_cap_usd: float = 60.0,
+    ) -> None:
+        self.usage_ledger = usage_ledger or InMemoryUsageLedger()
+        self.hard_cap_usd = float(hard_cap_usd)
+
+    def check_run_budget(
+        self,
+        *,
+        user_id: UserId,
+        run_id: RunId,
+        next_cost_usd: float,
+    ) -> BudgetDecision:
+        projected = self.usage_ledger.total_run_cost_usd(
+            user_id=user_id,
+            run_id=run_id,
+        ) + max(0.0, float(next_cost_usd))
+        blocked = projected > self.hard_cap_usd
+        return BudgetDecision(
+            allowed=not blocked,
+            blocked=blocked,
+            warning=False,
+            projected_total_usd=round(projected, 6),
+            hard_cap_usd=self.hard_cap_usd,
+            reason="Hard cap exceeded." if blocked else "OK",
+        )
+
+    def record_actual_cost(
+        self,
+        *,
+        user_id: UserId,
+        run_id: RunId,
+        cost_usd: float,
+    ) -> None:
+        self.usage_ledger.record_usage(
+            UsageRecord(
+                provider_run_id=ProviderRunId.new(),
+                user_id=user_id,
+                run_id=run_id,
+                job_id=JobId.new(),
+                provider_name="budget",
+                model_id="actual-cost",
+                cost_usd=max(0.0, float(cost_usd)),
+                usage={},
+            )
+        )
+
+
+__all__ = [
+    "InMemoryBudgetService",
+    "InMemoryCacheStore",
+    "InMemoryJobQueue",
+    "InMemoryMetadataStore",
+    "InMemoryObjectStore",
+    "InMemoryProviderRegistry",
+    "InMemorySecretProvider",
+    "InMemoryUsageLedger",
+]
