@@ -1,6 +1,6 @@
 # Cloud-Agnostic API Conversion Progress Handoff
 
-Last updated: 2026-06-07 (session 6)
+Last updated: 2026-06-07 (session 7)
 
 This document summarizes what has been completed from
 `cloud_agnostic_api_conversion_stepwise_commit_plan.md`, why each part exists,
@@ -56,15 +56,23 @@ Completed through:
 - Stage 1
 - Stage 2
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
-- Stage 4 (complete) + Stage 5 through Step 5.3.2 (Phase 5.3 COMPLETE)
+- Stage 4 (complete)
+- Stage 5 (complete)
+- Stage 6 through Step 6.1.1
 
 Next step in the original plan:
 
-- Stage 6: Step 6.1.1 — Add API And Processor Dockerfiles
+- Stage 6: Step 6.1.2 — Finish Docker Compose Services
 
 Most recent verification:
 
-- Combined unit + safe integration: `781 passed`
+- Combined unit + safe integration: `799 passed, 3 skipped`
+- Targeted container packaging tests: `3 passed`
+- Targeted API/processor dependency/auth tests: `32 passed`
+- `git diff --check`: passed
+- Docker build smoke attempted for `Dockerfile.api`, but Docker daemon was not
+  reachable at `unix:///Users/madeel/.colima/default/docker.sock`; image builds
+  still need to be run once Colima/Docker is started.
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -1039,7 +1047,76 @@ Provider-switch relevance:
 
 - Not required for CLI provider switching.
 
-## What Is Left In The Original Plan
+## Stage 6 (In Progress): Full Local Parity Stack
+
+Purpose:
+
+Make local development mimic the API + processor + Postgres + object-store +
+queue topology closely enough that pre-deployment tests exercise production-like
+runtime boundaries.
+
+### Phase 6.1: Containers And Compose
+
+### Step 6.1.1: Add API And Processor Dockerfiles
+
+What was done (strict TDD — tests written and confirmed failing before implementation):
+
+- Added `tests/unit/test_container_packaging.py` before implementation.
+- Confirmed the new tests failed for the expected reason:
+  missing `Dockerfile.api`, `Dockerfile.processor`, and `.dockerignore`.
+- Added `Dockerfile.api`:
+  - Uses `python:3.12-slim`.
+  - Installs the project with the `api` extra.
+  - Starts `uvicorn urdu_pipeline.api.app:create_app --factory` on
+    `0.0.0.0:8000`.
+  - Exposes port `8000`.
+- Added `Dockerfile.processor`:
+  - Uses `python:3.12-slim`.
+  - Installs Debian `ffmpeg`, and verifies both `ffmpeg -version` and
+    `ffprobe -version` during build.
+  - Installs the project with `processor` and `cli` extras so the existing
+    `urdu-pipeline process` command can run.
+  - Defaults `PROCESSOR_API_URL=http://api:8000` and starts the processor
+    command with that URL.
+- Added `.dockerignore` to keep local state, virtualenvs, caches, run outputs,
+  input audio, git metadata, and env files out of the Docker build context.
+
+Verification:
+
+- Red test run before implementation:
+  `.venv/bin/python -m pytest tests/unit/test_container_packaging.py -q`
+  failed with 3 expected missing-file failures.
+- Targeted packaging test after implementation:
+  `.venv/bin/python -m pytest tests/unit/test_container_packaging.py -q`
+  passed (`3 passed`).
+- Targeted API/processor dependency/auth tests:
+  `.venv/bin/python -m pytest tests/unit/test_dependency_boundaries.py tests/unit/test_service_auth.py tests/unit/test_api_skeleton.py -q`
+  passed (`32 passed`).
+- Full local unit + safe integration suite:
+  `.venv/bin/python -m pytest tests/unit tests/integration_safe -q`
+  passed (`799 passed, 3 skipped`).
+- `git diff --check` passed.
+- Docker build smoke was attempted:
+  `docker build -f Dockerfile.api -t urdu-pipeline-api:step-6.1.1 .`
+  could not run because the Docker daemon was not reachable at
+  `unix:///Users/madeel/.colima/default/docker.sock`.
+
+Why it was needed:
+
+- The API and processor now have separate container build artifacts, matching
+  the runtime split established by the ADRs.
+- The API image installs only the API runtime surface rather than UI or
+  processor-only dependencies.
+- The processor image includes `ffmpeg`/`ffprobe`, which are required for audio
+  validation and chunking inside the background processor.
+- `.dockerignore` prevents secrets and large local artifacts from being sent to
+  Docker builds.
+
+Needed for provider switch only?
+
+- No. This is local parity/backend deployment infrastructure.
+
+## Later Completed Steps And Remaining Plan Status
 
 ### Step 4.2.4: Add CSRF, CORS, And Rate Limits
 
@@ -1847,60 +1924,28 @@ Provider-switch relevance:
 
 - Not required for CLI provider switching.
 
-## Remaining Stage 4 Work
-
-Why needed:
-
-- Required for a secure hosted API.
-
-Needed for provider switch?
-
-- No.
-
-## Remaining Stage 4: Auth And API Backend (routes)
+## Completed Stage 4: Auth And API Backend
 
 Purpose:
 
-Build the public backend API resource routes.
+Build the public backend API resource routes and security controls.
 
-Remaining phases:
+Status:
 
-- upload/run/artifact/event routes (Steps 4.3.1–4.3.4)
-- OpenAPI generation/review (Step 4.3.5)
+- Complete through Step 4.3.5.
+- No remaining Stage 4 work in the original stepwise plan.
 
-Why needed:
-
-- Required if users will interact with a hosted backend instead of the CLI.
-- Required for multi-user uploads, run creation, artifact listing, and API
-  security.
-
-Needed for provider switch?
-
-- No.
-
-## Remaining Stage 5: Processor And Job Execution
+## Completed Stage 5: Processor And Job Execution
 
 Purpose:
 
-Build the long-running worker that claims jobs and executes pipeline stages.
+Build the long-running worker foundation that claims jobs and executes pipeline
+stages.
 
-Remaining phases:
+Status:
 
-- processor command and service auth
-- claim/heartbeat/lease/retry/cancel/dead-letter loop
-- workspace materialization
-- chunk/transcribe/reconcile/translate/article job execution
-- retry idempotency
-- temp object/workspace cleanup
-
-Why needed:
-
-- Required for asynchronous API-backed processing.
-- Required if API and heavy model work run in separate services.
-
-Needed for provider switch?
-
-- No, unless provider calls are moving out of CLI into processor runtime now.
+- Complete through Step 5.3.2.
+- No remaining Stage 5 work in the original stepwise plan.
 
 ## Remaining Stage 6: Full Local Parity Stack
 
@@ -1910,7 +1955,6 @@ Make Docker Compose behave like the target backend stack.
 
 Remaining phases:
 
-- API and processor Dockerfiles
 - finished Docker Compose services
 - setup commands
 - workflow docs
@@ -2145,21 +2189,23 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- Current state: all unit tests pass (781 passed).
-- Stage 4 COMPLETE. Stage 5 Phase 5.1 COMPLETE. Phase 5.2 COMPLETE. Phase 5.3 COMPLETE.
-  Stage 5 fully complete (5.1.1, 5.1.2, 5.2.1–5.2.4, 5.3.1, 5.3.2 all done).
+- Current state: all local unit and safe integration tests pass
+  (`799 passed, 3 skipped`).
+- Stage 4 COMPLETE. Stage 5 COMPLETE. Stage 6 Step 6.1.1 COMPLETE.
 - **Deployment target: AWS Lightsail** (decided 2026-06-07). Cloudflare is no
   longer the target. The architecture remains cloud-agnostic; only Stage 8
   content and Stage 9 provisioning changed in the plan. No code changes needed
   — all completed work was already cloud-agnostic.
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 6.1.1: Add API And Processor Dockerfiles.
+- Next step is Step 6.1.2: Finish Docker Compose Services.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
 - Run targeted tests before full suites.
 - Do not revert unrelated work.
 - Use `.venv/bin/python -m pytest` (not bare `pytest`) to run tests.
+- Docker build smoke for Step 6.1.1 still needs to be rerun once the local
+  Docker/Colima daemon is started.
 
 ## Suggested Next Decision
 
@@ -2176,14 +2222,16 @@ Track B: continue backend conversion (currently active)
 
 - **Stage 5 is fully COMPLETE** (Phases 5.1, 5.2, 5.3 all done).
   Steps 5.1.1, 5.1.2, 5.2.1–5.2.4, 5.3.1, 5.3.2 all verified.
+- **Stage 6 Step 6.1.1 is COMPLETE** (API Dockerfile, processor Dockerfile,
+  `.dockerignore`, and packaging tests added).
 - **Deployment target changed to AWS Lightsail** (2026-06-07).
   - Stage 8 has been rewritten as "AWS Production Adapter Verification"
     (S3, RDS, Redis/SQS, Secrets Manager adapters).
   - Stage 9 provisioning updated for AWS resources.
   - Stage 8 (Cloudflare spike) is fully replaced — no work to carry forward.
   - Nothing in Stages 1–5 needs to change.
-- Next step: Step 6.1.1 — Add API And Processor Dockerfiles.
-- Then compose stack (Stage 6), hardening (Stage 7), AWS adapter
+- Next step: Step 6.1.2 — Finish Docker Compose Services.
+- Then Stage 6 setup/docs/E2E, hardening (Stage 7), AWS adapter
   verification (Stage 8), production deploy (Stage 9).
 
 Track C: stabilize and commit current work
