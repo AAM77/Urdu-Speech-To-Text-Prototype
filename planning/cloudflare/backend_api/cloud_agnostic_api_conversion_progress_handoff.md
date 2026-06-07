@@ -1,6 +1,6 @@
 # Cloud-Agnostic API Conversion Progress Handoff
 
-Last updated: 2026-06-07
+Last updated: 2026-06-07 (session 2)
 
 This document summarizes what has been completed from
 `cloud_agnostic_api_conversion_stepwise_commit_plan.md`, why each part exists,
@@ -46,7 +46,7 @@ Recommended decision point:
   cloud/API plan after the completed Stage 2 work and implement the new provider
   adapter(s).
 - If the priority is "ship the backend API/processor architecture", continue
-  the plan from Step 3.3.3.
+  the plan from Step 4.1.2.
 
 ## Current Implementation Status
 
@@ -55,16 +55,16 @@ Completed through:
 - Stage 0
 - Stage 1
 - Stage 2
-- Stage 3 through Step 3.3.2
+- Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
+- Stage 4 through Step 4.1.1
 
 Next step in the original plan:
 
-- Step 3.3.3: Implement Local Secrets And Scoped Cache Store
+- Step 4.1.2: Add Strict Public Request/Response Schemas
 
 Most recent verification:
 
-- Unit tests: `186 passed`
-- Safe integration tests: `15 passed, 3 skipped`
+- Combined unit + safe integration: `231 passed, 3 skipped`
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -744,47 +744,156 @@ Provider-switch relevance:
 
 - Not required for provider switching.
 
-## What Is Left In The Original Plan
-
-## Remaining Stage 3 Work
-
 ### Step 3.3.3: Implement Local Secrets And Scoped Cache Store
 
-Why the original plan includes it:
+What was done:
 
-- Backend services need runtime secrets and scoped cache behavior that mimics
-  cloud deployments.
-- Secrets should not be hardcoded or pulled directly by arbitrary code.
+- Added `EnvSecretProvider` in `src/urdu_pipeline/infrastructure/secrets.py`.
+  Reads from `os.environ`. Fails closed for both missing and empty-string values.
+- Fixed `SecretValue.__repr__` and `__str__` in `application/ports/services.py` to
+  show `<redacted>` instead of the raw value — prevents accidental secret leakage
+  into logs or tracebacks.
+- Added `test_postgres_metadata_store_cache_does_not_leak_across_users` to the
+  postgres store test: verifies user A's cache entries are invisible to user B and
+  that deleting A's entry does not touch B's.
+- Exported `EnvSecretProvider` from `infrastructure/__init__.py`.
 
-Needed for provider switch?
+Why it was needed:
 
-- A secret provider is useful for API keys.
-- Full local secrets/cache adapter work is not mandatory if switching provider
-  in the current CLI and using environment variables.
+- The API and processor need to resolve secrets (API keys, DB credentials) from
+  the environment without hardcoding them. `EnvSecretProvider` is the local
+  implementation behind the `SecretProvider` port.
+- `SecretValue` repr redaction is a safety rule — any logging of a `SecretValue`
+  should never expose the actual value.
+
+Provider-switch relevance:
+
+- Directly relevant. Provider API keys (e.g. `OPENAI_API_KEY`) will be resolved
+  through `EnvSecretProvider` in the processor rather than read from env directly.
 
 ### Step 3.3.4: Add Seed Commands
 
+What was done:
+
+- Added `src/urdu_pipeline/admin/__init__.py` and `src/urdu_pipeline/admin/seed.py`
+  with four pure functions:
+  - `seed_user(store, *, username)` → `UserRecord`
+  - `seed_service_identity(store, *, name)` → `ServiceIdentityRecord`
+  - `seed_provider_config(store, *, provider_name, model_roles)` → `ProviderConfigSnapshot`
+  - `seed_bucket(client, *, bucket, region)` → `bool`
+- Each function accepts the relevant store/client so they can be tested with
+  in-memory fakes and wired to real adapters by CLI commands.
+- Added four CLI commands to `cli.py`:
+  - `urdu-pipeline seed-user --username <name>`
+  - `urdu-pipeline seed-service-identity --name <name>`
+  - `urdu-pipeline seed-provider-config [--provider-name <name>]`
+  - `urdu-pipeline seed-bucket [--bucket <name>] [--endpoint-url <url>] [--region <r>]`
+- Added object store settings to `Settings`:
+  `OBJECT_STORE_ENDPOINT_URL`, `OBJECT_STORE_BUCKET`, `OBJECT_STORE_REGION`,
+  `OBJECT_STORE_ACCESS_KEY`, `OBJECT_STORE_SECRET_KEY`
+- Added `REDIS_URL` to `Settings`.
+- Updated `.env.example` with new fields.
+
+Why it was needed:
+
+- Local backend setup must pre-populate the database with a user, a processor
+  service identity, and a provider config before the API can serve real requests.
+- `seed-bucket` idempotently creates the MinIO/S3 bucket without relying on
+  auto-creation, using `head_bucket` + `create_bucket` with correct AWS region
+  constraint rules.
+
+Provider-switch relevance:
+
+- `seed-provider-config` directly populates the DB with model roles from current
+  settings. Any provider switch should re-run `seed-provider-config` to write a
+  new versioned config snapshot.
+
+## Stage 4 (In Progress): Auth And API Backend
+
+### Step 4.1.1: Add FastAPI App Skeleton
+
+What was done:
+
+- Added `fastapi>=0.115,<1`, `uvicorn[standard]>=0.30,<1`, `httpx2>=2.0,<3` to
+  `pyproject.toml` `api` and `dev` extras; installed in `.venv`.
+- Added `src/urdu_pipeline/api/app.py` with `create_app(*, state)` factory.
+  `AppState` is injected so tests use in-memory fakes and production wires real
+  adapters without changing route code.
+- Added `src/urdu_pipeline/api/dependencies.py` with `AppState` dataclass and
+  `get_app_state`, `get_metadata_store`, `get_object_store`, `get_cache_store`,
+  `get_secret_provider` FastAPI `Depends`-compatible functions.
+- Added `src/urdu_pipeline/api/routes/__init__.py` and
+  `src/urdu_pipeline/api/routes/health.py` with `GET /health` returning
+  `{status: "ok", version: "0.1.0"}`.
+- Health response never exposes internal config fields (tested explicitly).
+- Unknown routes return 404 (tested).
+
+Why it was needed:
+
+- A FastAPI factory with injected adapters is the minimum testable API surface.
+  The factory pattern ensures every future route test can use in-memory fakes.
+- Keeping adapters injected (not imported as singletons) makes the app
+  cloud-neutral: the same code runs locally with MinIO/Postgres and in production
+  with S3/RDS without any route-level changes.
+
+Provider-switch relevance:
+
+- Not required for CLI provider switching.
+- Required for the hosted API that stages 4-6 build.
+
+## What Is Left In The Original Plan
+
+## Remaining Stage 4 Work
+
+### Step 4.1.2: Add Strict Public Request/Response Schemas (NEXT STEP)
+
 Why the original plan includes it:
 
-- Local backend setup needs seed users, service identities, provider config,
-  prompts, bucket, and maybe default roles.
+- Public API schemas must reject unknown fields, never expose internal IDs
+  (user_id, object keys, provider/model names), and never accept raw text,
+  artifact JSON, or prompt fields from callers.
+- Pydantic v2 with `model_config = ConfigDict(extra="forbid")` enforces this.
 
-Needed for provider switch?
+What to implement:
 
-- Not required unless provider config is persisted in DB.
+- Request/response Pydantic models for:
+  - auth (login, token create, token revoke)
+  - uploads (init, complete, get)
+  - runs (create, list, get, cancel)
+  - events (list)
+  - artifacts (list, get, download)
+  - tokens (create, revoke, list)
+- Tests proving unknown fields are rejected.
+- Tests proving public schemas never include `user_id`, object keys, provider
+  fields, raw text, or artifact JSON.
 
-## Remaining Stage 4: Auth And API Backend
-
-Purpose:
-
-Build the public backend API.
+### Step 4.2.x: Auth, Sessions, Tokens, CSRF, CORS, Rate Limits
 
 Remaining phases:
 
-- API foundation and schemas
-- auth, sessions, bearer tokens, CSRF, CORS, rate limits
-- upload/run/artifact/event routes
-- OpenAPI generation/review
+- Admin CLI for users/service identities (Step 4.2.1)
+- Login, logout, session resolution (Step 4.2.2)
+- Bearer token auth (Step 4.2.3)
+- CSRF, CORS, rate limits (Step 4.2.4)
+
+Why needed:
+
+- Required for a secure hosted API.
+
+Needed for provider switch?
+
+- No.
+
+## Remaining Stage 4: Auth And API Backend (routes)
+
+Purpose:
+
+Build the public backend API resource routes.
+
+Remaining phases:
+
+- upload/run/artifact/event routes (Steps 4.3.1–4.3.4)
+- OpenAPI generation/review (Step 4.3.5)
 
 Why needed:
 
@@ -950,8 +1059,7 @@ The likely minimal path is:
    - safe CLI end-to-end test with fake provider
 
 7. Only after provider switching works, decide whether to resume:
-   - Step 3.3.3 if continuing backend infrastructure
-   - Stage 4 if building API
+   - Stage 4 Step 4.1.2 if continuing backend API
    - Stage 5 if building processor
 
 ## Current High-Level Code Areas Added Or Changed
@@ -975,6 +1083,21 @@ Infrastructure:
 - `src/urdu_pipeline/infrastructure/db/*`
 - `src/urdu_pipeline/infrastructure/s3.py`
 - `src/urdu_pipeline/infrastructure/redis_queue.py`
+- `src/urdu_pipeline/infrastructure/secrets.py`        (NEW — EnvSecretProvider)
+
+Admin / seed:
+
+- `src/urdu_pipeline/admin/__init__.py`                (NEW)
+- `src/urdu_pipeline/admin/seed.py`                    (NEW — seed_user, seed_service_identity,
+                                                          seed_provider_config, seed_bucket)
+
+API:
+
+- `src/urdu_pipeline/api/__init__.py`
+- `src/urdu_pipeline/api/app.py`                       (NEW — create_app factory)
+- `src/urdu_pipeline/api/dependencies.py`              (NEW — AppState, get_* Depends functions)
+- `src/urdu_pipeline/api/routes/__init__.py`           (NEW)
+- `src/urdu_pipeline/api/routes/health.py`             (NEW — GET /health)
 
 Provider/stage safety:
 
@@ -988,12 +1111,12 @@ Provider/stage safety:
 
 CLI/config/local stack:
 
-- `src/urdu_pipeline/cli.py`
-- `src/urdu_pipeline/config/settings.py`
-- `pyproject.toml`
+- `src/urdu_pipeline/cli.py`                           (added seed-* commands)
+- `src/urdu_pipeline/config/settings.py`               (added object_store_* and redis_url fields)
+- `pyproject.toml`                                     (added fastapi, uvicorn, httpx2 to api/dev)
 - `Makefile`
 - `docker-compose.yml`
-- `.env.example`
+- `.env.example`                                       (added object store + redis fields)
 - `.env.local.example`
 
 Tests:
@@ -1007,10 +1130,15 @@ Tests:
 - prompt-injection fixture tests
 - stage tests
 - migration tests
-- PostgreSQL metadata tests
+- PostgreSQL metadata tests (including cross-user cache isolation test)
 - S3 object-store tests
 - Redis job-queue tests
 - safe integration tests
+- `tests/unit/test_env_secret_provider.py`             (NEW — EnvSecretProvider, SecretValue redaction)
+- `tests/unit/test_seed_commands.py`                   (NEW — seed_user, seed_service_identity,
+                                                          seed_provider_config, seed_bucket)
+- `tests/unit/test_api_skeleton.py`                    (NEW — /health route, AppState wiring,
+                                                          no secrets leak, 404 on unknown path)
 
 ## How To Hand This To Another AI Provider
 
@@ -1032,11 +1160,13 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- If the goal is provider switching, do not continue the backend plan unless
-  asked.
+- Current state: all unit and safe integration tests pass (231 passed, 3 skipped).
+- The goal is continuing the backend API conversion (Track B below).
+- Next step is Step 4.1.2: Add Strict Public Request/Response Schemas.
 - Preserve all prompt-safety and provider-request boundaries.
 - Run targeted tests before full suites.
 - Do not revert unrelated work.
+- Use `.venv/bin/python -m pytest` (not bare `pytest`) to run tests.
 
 ## Suggested Next Decision
 
@@ -1049,14 +1179,14 @@ Track A: switch AI provider now
 - Keep Stage 2 prompt-safety tests passing.
 - Avoid spending time on DB/API/Redis/S3 unless needed by the provider switch.
 
-Track B: continue backend conversion
+Track B: continue backend conversion (currently active)
 
-- Continue original plan at Step 3.3.3.
-- Implement local secrets and scoped cache store.
-- Then seed commands, API, processor, and local parity stack.
+- Next step: Step 4.1.2 — Add Strict Public Request/Response Schemas.
+- Then auth (Step 4.2.x), resource routes (Step 4.3.x).
+- Then processor (Stage 5) and local parity stack (Stage 6).
 
 Track C: stabilize and commit current work
 
-- Review the current diff.
-- Commit the completed Step 3.3.2 work if not already committed.
+- Review the current diff (all untracked new files).
+- Commit the session 2 work (Steps 3.3.3, 3.3.4, 4.1.1).
 - Then decide Track A or Track B.
