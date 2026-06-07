@@ -31,6 +31,13 @@ from urdu_pipeline.admin.seed import (
     seed_service_identity,
     seed_user,
 )
+from urdu_pipeline.admin.users import (
+    admin_create_user,
+    admin_disable_user,
+    admin_list_users,
+    admin_reset_password,
+    admin_revoke_service_identity,
+)
 from urdu_pipeline.infrastructure.db.migrations import connect_postgres, run_migrations
 from urdu_pipeline.infrastructure.db.metadata import PostgresMetadataStore
 from urdu_pipeline.stages.article_generator import run_article_stage
@@ -480,6 +487,174 @@ def seed_bucket_cmd(
         console.print(f"[green]Bucket created:[/] {effective_bucket}")
     else:
         console.print(f"[yellow]Bucket already exists:[/] {effective_bucket}")
+
+
+@app.command(name="admin-create-user")
+def admin_create_user_cmd(
+    username: str = typer.Option(..., "--username", help="Username for the new user."),
+    password: str = typer.Option(..., "--password", help="Initial password (will be hashed)."),
+    database_url: Optional[str] = typer.Option(
+        None,
+        "--database-url",
+        help="PostgreSQL connection URL. Defaults to DATABASE_URL from settings.",
+    ),
+) -> None:
+    """Create an active user with a hashed password (no public signup endpoint)."""
+    target_url = database_url or get_settings().database_url
+    connection = None
+    try:
+        connection = connect_postgres(target_url)
+        store = PostgresMetadataStore(connection)
+        record = admin_create_user(store, _Pbkdf2Hasher(), username=username, password=password)
+    except Exception as exc:
+        console.print(f"[red]admin-create-user failed:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        if connection is not None:
+            connection.close()
+    console.print(
+        f"[green]User created.[/] user_id={record.user_id} username={record.username}"
+    )
+
+
+@app.command(name="admin-reset-password")
+def admin_reset_password_cmd(
+    user_id: str = typer.Option(..., "--user-id", help="User ID (usr_<hex>)."),
+    new_password: str = typer.Option(..., "--new-password", help="New password (will be hashed)."),
+    database_url: Optional[str] = typer.Option(
+        None,
+        "--database-url",
+        help="PostgreSQL connection URL. Defaults to DATABASE_URL from settings.",
+    ),
+) -> None:
+    """Reset a user's password."""
+    from urdu_pipeline.domain import UserId
+
+    target_url = database_url or get_settings().database_url
+    connection = None
+    try:
+        uid = UserId(user_id)
+        connection = connect_postgres(target_url)
+        store = PostgresMetadataStore(connection)
+        admin_reset_password(store, _Pbkdf2Hasher(), user_id=uid, new_password=new_password)
+    except Exception as exc:
+        console.print(f"[red]admin-reset-password failed:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        if connection is not None:
+            connection.close()
+    console.print(f"[green]Password reset.[/] user_id={user_id}")
+
+
+@app.command(name="admin-disable-user")
+def admin_disable_user_cmd(
+    user_id: str = typer.Option(..., "--user-id", help="User ID (usr_<hex>)."),
+    database_url: Optional[str] = typer.Option(
+        None,
+        "--database-url",
+        help="PostgreSQL connection URL. Defaults to DATABASE_URL from settings.",
+    ),
+) -> None:
+    """Disable a user, preventing them from logging in."""
+    from urdu_pipeline.domain import UserId
+
+    target_url = database_url or get_settings().database_url
+    connection = None
+    try:
+        uid = UserId(user_id)
+        connection = connect_postgres(target_url)
+        store = PostgresMetadataStore(connection)
+        record = admin_disable_user(store, user_id=uid)
+    except Exception as exc:
+        console.print(f"[red]admin-disable-user failed:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        if connection is not None:
+            connection.close()
+    console.print(f"[green]User disabled.[/] user_id={record.user_id} status={record.status}")
+
+
+@app.command(name="admin-list-users")
+def admin_list_users_cmd(
+    database_url: Optional[str] = typer.Option(
+        None,
+        "--database-url",
+        help="PostgreSQL connection URL. Defaults to DATABASE_URL from settings.",
+    ),
+) -> None:
+    """List all users."""
+    target_url = database_url or get_settings().database_url
+    connection = None
+    try:
+        connection = connect_postgres(target_url)
+        store = PostgresMetadataStore(connection)
+        users = admin_list_users(store)
+    except Exception as exc:
+        console.print(f"[red]admin-list-users failed:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+    table = Table(title=f"Users ({len(users)})")
+    table.add_column("user_id")
+    table.add_column("username")
+    table.add_column("status")
+    table.add_column("created_at")
+    for u in users:
+        table.add_row(str(u.user_id), u.username, str(u.status), str(u.created_at))
+    console.print(table)
+
+
+@app.command(name="admin-revoke-service-identity")
+def admin_revoke_service_identity_cmd(
+    service_identity_id: str = typer.Option(
+        ..., "--service-identity-id", help="Service identity ID (svc_<hex>)."
+    ),
+    database_url: Optional[str] = typer.Option(
+        None,
+        "--database-url",
+        help="PostgreSQL connection URL. Defaults to DATABASE_URL from settings.",
+    ),
+) -> None:
+    """Revoke a service identity, preventing it from authenticating."""
+    from urdu_pipeline.domain import ServiceIdentityId
+
+    target_url = database_url or get_settings().database_url
+    connection = None
+    try:
+        svc_id = ServiceIdentityId(service_identity_id)
+        connection = connect_postgres(target_url)
+        store = PostgresMetadataStore(connection)
+        record = admin_revoke_service_identity(store, service_identity_id=svc_id)
+    except Exception as exc:
+        console.print(f"[red]admin-revoke-service-identity failed:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        if connection is not None:
+            connection.close()
+    console.print(
+        f"[green]Service identity revoked.[/] "
+        f"service_identity_id={record.service_identity_id} status={record.status}"
+    )
+
+
+class _Pbkdf2Hasher:
+    """PBKDF2-HMAC-SHA256 placeholder hasher for the admin CLI.
+
+    This will be replaced with a proper bcrypt/Argon2 implementation that is
+    tied to the ``AuthService`` port in Step 4.2.2.  Do not use this hasher
+    in production without upgrading first.
+    """
+
+    def hash_secret(self, secret: str) -> str:
+        import base64
+        import hashlib
+        import os
+
+        salt = os.urandom(16)
+        dk = hashlib.pbkdf2_hmac("sha256", secret.encode(), salt, 260_000)
+        return "pbkdf2:" + base64.b64encode(salt + dk).decode()
 
 
 if __name__ == "__main__":  # pragma: no cover

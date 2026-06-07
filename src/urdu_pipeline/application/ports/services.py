@@ -38,6 +38,7 @@ class UserRecord:
     user_id: UserId
     username: str
     status: UserStatus
+    password_hash: str | None = None
     created_at: datetime = field(default_factory=_utcnow)
 
 
@@ -176,12 +177,18 @@ class MetadataStore(Protocol):
 
     def get_user(self, user_id: UserId) -> UserRecord | None: ...
 
+    def update_user(self, record: UserRecord) -> None: ...
+
+    def list_users(self) -> Sequence[UserRecord]: ...
+
     def create_service_identity(self, record: ServiceIdentityRecord) -> None: ...
 
     def get_service_identity(
         self,
         service_identity_id: ServiceIdentityId,
     ) -> ServiceIdentityRecord | None: ...
+
+    def update_service_identity(self, record: ServiceIdentityRecord) -> None: ...
 
     def create_upload(self, record: UploadRecord) -> None: ...
 

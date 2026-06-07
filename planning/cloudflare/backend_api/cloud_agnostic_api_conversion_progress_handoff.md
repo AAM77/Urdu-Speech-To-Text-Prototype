@@ -56,15 +56,15 @@ Completed through:
 - Stage 1
 - Stage 2
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
-- Stage 4 through Step 4.1.2
+- Stage 4 through Step 4.2.1
 
 Next step in the original plan:
 
-- Step 4.2.1: Add Admin CLI For Users And Service Identities
+- Step 4.2.2: Add Login, Logout, Session Resolution
 
 Most recent verification:
 
-- Combined unit + safe integration: `352 passed, 3 skipped`
+- Combined unit + safe integration: `370 passed, 3 skipped`
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -878,6 +878,41 @@ Provider-switch relevance:
 - Not required for CLI provider switching.
 - Required for the API that accepts run creation from external callers.
 
+### Step 4.2.1: Add Admin CLI For Users And Service Identities
+
+What was done:
+
+- Added `password_hash: str | None = None` to `UserRecord` (backward-compatible).
+- Added `update_user`, `list_users`, `update_service_identity` to the `MetadataStore`
+  Protocol and to `InMemoryMetadataStore`.
+- Created `src/urdu_pipeline/admin/users.py` with five pure admin functions behind
+  narrow protocols (`_UserAdminStore`, `_ServiceIdentityAdminStore`, `_PasswordHasher`):
+  - `admin_create_user(store, hasher, *, username, password)` → `UserRecord`
+  - `admin_reset_password(store, hasher, *, user_id, new_password)` → `UserRecord`
+  - `admin_disable_user(store, *, user_id)` → `UserRecord`
+  - `admin_list_users(store)` → `list[UserRecord]`
+  - `admin_revoke_service_identity(store, *, service_identity_id)` → `ServiceIdentityRecord`
+- Added five CLI commands to `cli.py`:
+  - `urdu-pipeline admin-create-user --username <name> --password <pw>`
+  - `urdu-pipeline admin-reset-password --user-id <id> --new-password <pw>`
+  - `urdu-pipeline admin-disable-user --user-id <id>`
+  - `urdu-pipeline admin-list-users`
+  - `urdu-pipeline admin-revoke-service-identity --service-identity-id <id>`
+- Added `_Pbkdf2Hasher` placeholder in `cli.py` (PBKDF2-HMAC-SHA256 with random salt).
+  Clearly marked as a temporary hasher to be replaced with bcrypt/Argon2 in Step 4.2.2.
+- No public signup endpoint; these commands are operator-only.
+
+Why it was needed:
+
+- There is no public signup; all users must be pre-configured by an operator.
+- Resetting passwords, disabling users, and revoking service identities are essential
+  lifecycle operations before the API is exposed.
+- Narrow protocols keep the functions testable without a real database.
+
+Provider-switch relevance:
+
+- Not required for CLI provider switching.
+
 ## What Is Left In The Original Plan
 
 ## Remaining Stage 4 Work
@@ -1114,6 +1149,9 @@ API:
 - `src/urdu_pipeline/api/routes/__init__.py`           (NEW)
 - `src/urdu_pipeline/api/routes/health.py`             (NEW — GET /health)
 - `src/urdu_pipeline/api/schemas.py`                   (NEW — 21 strict public schemas)
+- `src/urdu_pipeline/admin/users.py`                   (NEW — admin_create_user, admin_reset_password,
+                                                          admin_disable_user, admin_list_users,
+                                                          admin_revoke_service_identity)
 
 Provider/stage safety:
 
@@ -1155,6 +1193,10 @@ Tests:
                                                           seed_provider_config, seed_bucket)
 - `tests/unit/test_api_skeleton.py`                    (NEW — /health route, AppState wiring,
                                                           no secrets leak, 404 on unknown path)
+- `tests/unit/test_admin_users.py`                     (NEW — 18 tests: admin_create_user,
+                                                          admin_reset_password, admin_disable_user,
+                                                          admin_list_users,
+                                                          admin_revoke_service_identity)
 - `tests/unit/test_api_schemas.py`                     (NEW — 121 tests: extra=forbid on all schemas,
                                                           forbidden field names absent, specific
                                                           forbidden fields rejected by name, valid
@@ -1180,9 +1222,9 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- Current state: all unit and safe integration tests pass (352 passed, 3 skipped).
+- Current state: all unit and safe integration tests pass (370 passed, 3 skipped).
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 4.2.1: Add Admin CLI For Users And Service Identities.
+- Next step is Step 4.2.2: Add Login, Logout, Session Resolution.
 - Preserve all prompt-safety and provider-request boundaries.
 - Run targeted tests before full suites.
 - Do not revert unrelated work.
@@ -1201,8 +1243,8 @@ Track A: switch AI provider now
 
 Track B: continue backend conversion (currently active)
 
-- Next step: Step 4.2.1 — Add Admin CLI For Users And Service Identities.
-- Then login/session (4.2.2), bearer tokens (4.2.3), CSRF/CORS/rate limits (4.2.4).
+- Next step: Step 4.2.2 — Add Login, Logout, Session Resolution.
+- Then bearer tokens (4.2.3), CSRF/CORS/rate limits (4.2.4).
 - Then resource routes (Step 4.3.x).
 - Then processor (Stage 5) and local parity stack (Stage 6).
 

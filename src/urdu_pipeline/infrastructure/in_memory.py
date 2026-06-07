@@ -255,6 +255,17 @@ class InMemoryMetadataStore:
     def get_user(self, user_id: UserId) -> UserRecord | None:
         return self._users.get(user_id)
 
+    def update_user(self, record: UserRecord) -> None:
+        if record.user_id not in self._users:
+            raise KeyError(f"user not found: {record.user_id}")
+        self._users[record.user_id] = record
+
+    def list_users(self) -> Sequence[UserRecord]:
+        return sorted(
+            self._users.values(),
+            key=lambda u: (u.created_at, str(u.user_id)),
+        )
+
     def create_service_identity(self, record: ServiceIdentityRecord) -> None:
         self._service_identities[record.service_identity_id] = record
 
@@ -263,6 +274,11 @@ class InMemoryMetadataStore:
         service_identity_id: ServiceIdentityId,
     ) -> ServiceIdentityRecord | None:
         return self._service_identities.get(service_identity_id)
+
+    def update_service_identity(self, record: ServiceIdentityRecord) -> None:
+        if record.service_identity_id not in self._service_identities:
+            raise KeyError(f"service identity not found: {record.service_identity_id}")
+        self._service_identities[record.service_identity_id] = record
 
     def create_upload(self, record: UploadRecord) -> None:
         self._require_user(record.user_id)
