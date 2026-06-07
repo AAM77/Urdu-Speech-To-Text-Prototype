@@ -274,6 +274,12 @@ class InMemoryMetadataStore:
             return None
         return record
 
+    def list_uploads(self, *, user_id: UserId) -> Sequence[UploadRecord]:
+        return sorted(
+            (record for record in self._uploads.values() if record.user_id == user_id),
+            key=lambda record: (record.created_at, str(record.upload_id)),
+        )
+
     def create_run(self, record: RunRecord) -> None:
         self._require_user(record.user_id)
         self._runs[record.run_id] = record
@@ -283,6 +289,12 @@ class InMemoryMetadataStore:
         if record is None or record.user_id != user_id:
             return None
         return record
+
+    def list_runs(self, *, user_id: UserId) -> Sequence[RunRecord]:
+        return sorted(
+            (record for record in self._runs.values() if record.user_id == user_id),
+            key=lambda record: (record.created_at, str(record.run_id)),
+        )
 
     def create_job(self, record: JobRecord) -> None:
         self._require_user(record.user_id)

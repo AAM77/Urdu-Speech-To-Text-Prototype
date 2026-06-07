@@ -10,10 +10,12 @@ from urdu_pipeline.infrastructure.db.migrations import (
     migrate_database,
     run_migrations,
 )
+from urdu_pipeline.infrastructure.db.metadata import PostgresMetadataStore
 
 __all__ = [
     "Migration",
     "MigrationReport",
+    "PostgresMetadataStore",
     "connect_postgres",
     "load_migrations",
     "migrate_database",
