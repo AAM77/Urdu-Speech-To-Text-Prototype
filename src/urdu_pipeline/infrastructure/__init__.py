@@ -15,6 +15,7 @@ from urdu_pipeline.infrastructure.in_memory import (
     InMemorySecretProvider,
     InMemoryUsageLedger,
 )
+from urdu_pipeline.infrastructure.s3 import S3ObjectStore
 
 __all__ = [
     "FilesystemArtifactSink",
@@ -28,4 +29,5 @@ __all__ = [
     "InMemoryProviderRegistry",
     "InMemorySecretProvider",
     "InMemoryUsageLedger",
+    "S3ObjectStore",
 ]

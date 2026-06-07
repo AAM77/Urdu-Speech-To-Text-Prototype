@@ -49,13 +49,18 @@ ui = [
 ]
 api = [
     "psycopg[binary]>=3.2,<4",
+    "boto3>=1.35,<2",
 ]
 processor = [
     "openai>=2.30,<3",
     "psycopg[binary]>=3.2,<4",
+    "boto3>=1.35,<2",
 ]
 db = [
     "psycopg[binary]>=3.2,<4",
+]
+object-store = [
+    "boto3>=1.35,<2",
 ]
 dev = [
     "pydantic>=2.13,<3",
@@ -68,6 +73,7 @@ dev = [
     "streamlit>=1.55,<2",
     "openai>=2.30,<3",
     "psycopg[binary]>=3.2,<4",
+    "boto3>=1.35,<2",
     "pytest>=9.0,<10",
     "pytest-mock>=3.14,<4",
 ]
