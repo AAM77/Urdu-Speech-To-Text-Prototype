@@ -9,6 +9,7 @@ from urdu_pipeline.domain.ids import (
     ProviderRunId,
     RunId,
     ServiceIdentityId,
+    SessionId,
     UploadId,
     UserId,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "RunId",
     "ServiceIdentityId",
     "ServiceIdentityStatus",
+    "SessionId",
     "StableStrEnum",
     "UploadId",
     "UploadStatus",

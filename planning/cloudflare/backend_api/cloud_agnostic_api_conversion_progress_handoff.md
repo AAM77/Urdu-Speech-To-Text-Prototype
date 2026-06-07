@@ -1,6 +1,6 @@
 # Cloud-Agnostic API Conversion Progress Handoff
 
-Last updated: 2026-06-07 (session 2)
+Last updated: 2026-06-07 (session 3)
 
 This document summarizes what has been completed from
 `cloud_agnostic_api_conversion_stepwise_commit_plan.md`, why each part exists,
@@ -56,15 +56,15 @@ Completed through:
 - Stage 1
 - Stage 2
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
-- Stage 4 through Step 4.2.1
+- Stage 4 through Step 4.2.2
 
 Next step in the original plan:
 
-- Step 4.2.2: Add Login, Logout, Session Resolution
+- Step 4.2.3: Add Bearer Token Auth
 
 Most recent verification:
 
-- Combined unit + safe integration: `370 passed, 3 skipped`
+- Combined unit + safe integration: `398 passed, 3 skipped`
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -898,8 +898,8 @@ What was done:
   - `urdu-pipeline admin-disable-user --user-id <id>`
   - `urdu-pipeline admin-list-users`
   - `urdu-pipeline admin-revoke-service-identity --service-identity-id <id>`
-- Added `_Pbkdf2Hasher` placeholder in `cli.py` (PBKDF2-HMAC-SHA256 with random salt).
-  Clearly marked as a temporary hasher to be replaced with bcrypt/Argon2 in Step 4.2.2.
+- Added `_Pbkdf2Hasher` placeholder in `cli.py` (PBKDF2-HMAC-SHA256 with random salt),
+  later replaced with `BcryptHasher` delegation in Step 4.2.2.
 - No public signup endpoint; these commands are operator-only.
 
 Why it was needed:
@@ -913,6 +913,71 @@ Provider-switch relevance:
 
 - Not required for CLI provider switching.
 
+### Step 4.2.2: Login, Logout, Session Resolution
+
+What was done:
+
+- Added `bcrypt>=4.0,<5` to `api` and `dev` extras in `pyproject.toml`.
+- Added `SessionId(prefix="ses")` to `domain/ids.py` and re-exported from `domain/__init__.py`.
+- Added `SessionRecord` dataclass to `application/ports/services.py`:
+  - Fields: `session_id`, `user_id`, `token_hash` (SHA-256 hex), `expires_at`, `created_at`, `revoked_at`.
+  - Token hash uses SHA-256 (not bcrypt) because session tokens are already high-entropy random values;
+    bcrypt would be unnecessary overhead. Bcrypt is reserved for low-entropy passwords.
+- Extended `MetadataStore` Protocol with:
+  - `get_user_by_username(username: str) -> UserRecord | None`
+  - `create_session(record: SessionRecord) -> None`
+  - `get_session_by_token_hash(token_hash: str) -> SessionRecord | None`
+  - `revoke_session(session_id: SessionId, *, revoked_at: datetime) -> None`
+- Implemented all new `MetadataStore` methods in `InMemoryMetadataStore`:
+  - Sessions stored in two dicts: by `session_id` and by `token_hash` for O(1) lookup.
+  - `revoke_session` uses `dataclasses.replace` to create updated record with `revoked_at` set.
+- Created `src/urdu_pipeline/auth/__init__.py` (package marker).
+- Created `src/urdu_pipeline/auth/hashing.py`:
+  - `PasswordHasher` Protocol with `hash_secret` and `verify_secret`.
+  - `BcryptHasher` concrete implementation (rounds=12 default).
+  - Lazy imports of `bcrypt` to avoid import-time cost when not used.
+- Created `src/urdu_pipeline/auth/sessions.py`:
+  - `_hash_token(raw_token)` → SHA-256 hex digest (internal).
+  - `create_session(store, *, user_id, expires_in=7d) -> (raw_token, SessionRecord)`.
+  - `resolve_session(store, *, raw_token) -> AuthPrincipal | None`.
+  - `revoke_session(store, *, session_id) -> None`.
+  - All three use a narrow `_SessionStore` protocol for testability.
+- Updated `AppState` in `api/dependencies.py`:
+  - Added `password_hasher: PasswordHasher = field(default_factory=BcryptHasher)`.
+  - Default means existing tests that create `AppState` still work without specifying a hasher.
+  - Added `get_password_hasher` dependency function.
+- Created `src/urdu_pipeline/api/routes/auth.py`:
+  - `POST /auth/login` — verifies username/password, creates session, sets HTTP-only cookie.
+  - `POST /auth/logout` — reads cookie, revokes session if valid, clears cookie.
+  - Cookie name: `"session"`. `httponly=True`, `samesite="lax"`, `secure=False` (dev; will be True in prod).
+  - Session lifetime: 7 days.
+  - Login returns `SessionResponse` (only `username`; never exposes `user_id` or internal IDs).
+  - Login errors for unknown user, wrong password, disabled user all return identical 401 to prevent enumeration.
+- Updated `api/app.py` to include `auth_router`.
+- Updated `cli.py`: replaced `_Pbkdf2Hasher` PBKDF2 implementation with delegation to `BcryptHasher`.
+- Wrote `tests/unit/test_auth_sessions.py` (17 tests):
+  - Session creation returns raw token + record with SHA-256 hash stored.
+  - Resolve returns `AuthPrincipal` for valid sessions; `None` for expired/revoked/unknown.
+  - Revoke stores `revoked_at` timestamp.
+- Wrote `tests/unit/test_auth_routes.py` (11 tests):
+  - Login: 200 on success, body contains `username` not `user_id`, cookie is HTTP-only with samesite attribute.
+  - Login: 401 for wrong password, unknown user, disabled user.
+  - Login: 422 for extra (injected) fields — schema strictly forbids unknown fields.
+  - Logout: 200 always, session revoked in store, cookie cleared.
+- Test count: 398 passed, 3 skipped.
+
+Why it was needed:
+
+- Session auth is the primary mechanism for browser-based clients.
+- HTTP-only cookies prevent XSS from stealing tokens.
+- SHA-256 session token hashing means a DB breach does not reveal live session tokens.
+- The `BcryptHasher` replaces the PBKDF2 placeholder so passwords are consistently hashed with
+  the same algorithm used for verification in the login route.
+
+Provider-switch relevance:
+
+- Not required for CLI provider switching.
+
 ## What Is Left In The Original Plan
 
 ## Remaining Stage 4 Work
@@ -921,8 +986,6 @@ Provider-switch relevance:
 
 Remaining phases:
 
-- Admin CLI for users/service identities (Step 4.2.1)
-- Login, logout, session resolution (Step 4.2.2)
 - Bearer token auth (Step 4.2.3)
 - CSRF, CORS, rate limits (Step 4.2.4)
 
@@ -1222,9 +1285,9 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- Current state: all unit and safe integration tests pass (370 passed, 3 skipped).
+- Current state: all unit and safe integration tests pass (398 passed, 3 skipped).
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 4.2.2: Add Login, Logout, Session Resolution.
+- Next step is Step 4.2.3: Add Bearer Token Auth.
 - Preserve all prompt-safety and provider-request boundaries.
 - Run targeted tests before full suites.
 - Do not revert unrelated work.
@@ -1243,8 +1306,8 @@ Track A: switch AI provider now
 
 Track B: continue backend conversion (currently active)
 
-- Next step: Step 4.2.2 — Add Login, Logout, Session Resolution.
-- Then bearer tokens (4.2.3), CSRF/CORS/rate limits (4.2.4).
+- Next step: Step 4.2.3 — Add Bearer Token Auth.
+- Then CSRF/CORS/rate limits (4.2.4).
 - Then resource routes (Step 4.3.x).
 - Then processor (Stage 5) and local parity stack (Stage 6).
 

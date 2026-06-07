@@ -19,6 +19,7 @@ from urdu_pipeline.domain import (
     RunStatus,
     ServiceIdentityId,
     ServiceIdentityStatus,
+    SessionId,
     UploadId,
     UploadStatus,
     UserId,
@@ -119,6 +120,23 @@ class CacheEntry:
 
 
 @dataclass(frozen=True)
+class SessionRecord:
+    """A server-side session associated with one authenticated user.
+
+    ``token_hash`` is a SHA-256 hex digest of the raw session token.  The raw
+    token is given to the client in an HTTP-only cookie; only the hash is
+    persisted so a DB read never reveals the client's credential.
+    """
+
+    session_id: SessionId
+    user_id: UserId
+    token_hash: str
+    expires_at: datetime
+    created_at: datetime = field(default_factory=_utcnow)
+    revoked_at: datetime | None = None
+
+
+@dataclass(frozen=True)
 class AuthPrincipal:
     principal_id: UserId | ServiceIdentityId
     kind: PrincipalKind
@@ -177,9 +195,17 @@ class MetadataStore(Protocol):
 
     def get_user(self, user_id: UserId) -> UserRecord | None: ...
 
+    def get_user_by_username(self, username: str) -> UserRecord | None: ...
+
     def update_user(self, record: UserRecord) -> None: ...
 
     def list_users(self) -> Sequence[UserRecord]: ...
+
+    def create_session(self, record: SessionRecord) -> None: ...
+
+    def get_session_by_token_hash(self, token_hash: str) -> SessionRecord | None: ...
+
+    def revoke_session(self, session_id: SessionId, *, revoked_at: datetime) -> None: ...
 
     def create_service_identity(self, record: ServiceIdentityRecord) -> None: ...
 
@@ -350,6 +376,7 @@ __all__ = [
     "SecretProvider",
     "SecretValue",
     "ServiceIdentityRecord",
+    "SessionRecord",
     "UploadRecord",
     "UsageLedger",
     "UsageRecord",

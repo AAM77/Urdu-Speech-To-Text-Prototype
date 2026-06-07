@@ -640,21 +640,17 @@ def admin_revoke_service_identity_cmd(
 
 
 class _Pbkdf2Hasher:
-    """PBKDF2-HMAC-SHA256 placeholder hasher for the admin CLI.
-
-    This will be replaced with a proper bcrypt/Argon2 implementation that is
-    tied to the ``AuthService`` port in Step 4.2.2.  Do not use this hasher
-    in production without upgrading first.
-    """
+    """Bcrypt hasher used by the admin CLI (delegates to ``BcryptHasher``)."""
 
     def hash_secret(self, secret: str) -> str:
-        import base64
-        import hashlib
-        import os
+        from urdu_pipeline.auth.hashing import BcryptHasher
 
-        salt = os.urandom(16)
-        dk = hashlib.pbkdf2_hmac("sha256", secret.encode(), salt, 260_000)
-        return "pbkdf2:" + base64.b64encode(salt + dk).decode()
+        return BcryptHasher().hash_secret(secret)
+
+    def verify_secret(self, secret: str, secret_hash: str) -> bool:
+        from urdu_pipeline.auth.hashing import BcryptHasher
+
+        return BcryptHasher().verify_secret(secret, secret_hash)
 
 
 if __name__ == "__main__":  # pragma: no cover

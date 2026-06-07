@@ -33,6 +33,7 @@ from urdu_pipeline.application.ports import (
     ServiceIdentityRecord,
     SecretProvider,
     SecretValue,
+    SessionRecord,
     SignedUrl,
     UploadRecord,
     UsageLedger,
@@ -47,6 +48,7 @@ from urdu_pipeline.domain import (
     ProviderRunId,
     RunId,
     ServiceIdentityId,
+    SessionId,
     UploadId,
     UserId,
 )
@@ -244,6 +246,8 @@ class InMemoryMetadataStore:
     def __init__(self) -> None:
         self._users: dict[UserId, UserRecord] = {}
         self._service_identities: dict[ServiceIdentityId, ServiceIdentityRecord] = {}
+        self._sessions: dict[SessionId, SessionRecord] = {}
+        self._sessions_by_token_hash: dict[str, SessionRecord] = {}
         self._uploads: dict[UploadId, UploadRecord] = {}
         self._runs: dict[RunId, RunRecord] = {}
         self._jobs: dict[JobId, JobRecord] = {}
@@ -254,6 +258,12 @@ class InMemoryMetadataStore:
 
     def get_user(self, user_id: UserId) -> UserRecord | None:
         return self._users.get(user_id)
+
+    def get_user_by_username(self, username: str) -> UserRecord | None:
+        for record in self._users.values():
+            if record.username == username:
+                return record
+        return None
 
     def update_user(self, record: UserRecord) -> None:
         if record.user_id not in self._users:
@@ -279,6 +289,23 @@ class InMemoryMetadataStore:
         if record.service_identity_id not in self._service_identities:
             raise KeyError(f"service identity not found: {record.service_identity_id}")
         self._service_identities[record.service_identity_id] = record
+
+    def create_session(self, record: SessionRecord) -> None:
+        self._sessions[record.session_id] = record
+        self._sessions_by_token_hash[record.token_hash] = record
+
+    def get_session_by_token_hash(self, token_hash: str) -> SessionRecord | None:
+        return self._sessions_by_token_hash.get(token_hash)
+
+    def revoke_session(self, session_id: SessionId, *, revoked_at: datetime) -> None:
+        from dataclasses import replace as dc_replace
+
+        existing = self._sessions.get(session_id)
+        if existing is None:
+            raise KeyError(f"session not found: {session_id}")
+        updated = dc_replace(existing, revoked_at=revoked_at)
+        self._sessions[session_id] = updated
+        self._sessions_by_token_hash[existing.token_hash] = updated
 
     def create_upload(self, record: UploadRecord) -> None:
         self._require_user(record.user_id)
