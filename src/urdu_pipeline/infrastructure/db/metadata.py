@@ -9,12 +9,14 @@ from typing import Any, Callable, Mapping, Sequence
 
 from urdu_pipeline.application.ports import (
     ArtifactRecord,
+    BearerTokenRecord,
     CacheEntry,
     CacheScope,
     JobLease,
     JobRecord,
     ProviderConfigSnapshot,
     RunRecord,
+    SessionRecord,
     ServiceIdentityRecord,
     UploadRecord,
     UserRecord,
@@ -35,6 +37,8 @@ from urdu_pipeline.domain import (
     RunStatus,
     ServiceIdentityId,
     ServiceIdentityStatus,
+    SessionId,
+    TokenId,
     UploadId,
     UploadStatus,
     UserId,
@@ -101,13 +105,21 @@ class PostgresMetadataStore:
         self._write(
             lambda cursor: cursor.execute(
                 """
-                INSERT INTO users (user_id, username, status, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO users (
+                    user_id,
+                    username,
+                    status,
+                    password_hash,
+                    created_at,
+                    updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 (
                     str(record.user_id),
                     record.username,
                     record.status.value,
+                    record.password_hash,
                     record.created_at,
                     record.created_at,
                 ),
@@ -118,7 +130,7 @@ class PostgresMetadataStore:
         with self.connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT user_id, username, status, created_at
+                SELECT user_id, username, status, password_hash, created_at
                 FROM users
                 WHERE user_id = %s
                 """,
@@ -126,6 +138,52 @@ class PostgresMetadataStore:
             )
             row = cursor.fetchone()
         return _user_from_row(row)
+
+    def get_user_by_username(self, username: str) -> UserRecord | None:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, username, status, password_hash, created_at
+                FROM users
+                WHERE username = %s
+                """,
+                (username,),
+            )
+            row = cursor.fetchone()
+        return _user_from_row(row)
+
+    def update_user(self, record: UserRecord) -> None:
+        self._write(
+            lambda cursor: cursor.execute(
+                """
+                UPDATE users
+                SET username = %s,
+                    status = %s,
+                    password_hash = %s,
+                    updated_at = %s
+                WHERE user_id = %s
+                """,
+                (
+                    record.username,
+                    record.status.value,
+                    record.password_hash,
+                    datetime.now(tz=timezone.utc),
+                    str(record.user_id),
+                ),
+            )
+        )
+
+    def list_users(self) -> Sequence[UserRecord]:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, username, status, password_hash, created_at
+                FROM users
+                ORDER BY created_at, user_id
+                """
+            )
+            rows = cursor.fetchall()
+        return [_user_from_row(row) for row in rows]
 
     def create_service_identity(self, record: ServiceIdentityRecord) -> None:
         self._write(
@@ -166,6 +224,220 @@ class PostgresMetadataStore:
             row = cursor.fetchone()
         return _service_identity_from_row(row)
 
+    def get_service_identity_by_name(self, name: str) -> ServiceIdentityRecord | None:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT service_identity_id, name, status, created_at
+                FROM service_identities
+                WHERE name = %s
+                """,
+                (name,),
+            )
+            row = cursor.fetchone()
+        return _service_identity_from_row(row)
+
+    def update_service_identity(self, record: ServiceIdentityRecord) -> None:
+        self._write(
+            lambda cursor: cursor.execute(
+                """
+                UPDATE service_identities
+                SET name = %s,
+                    status = %s,
+                    updated_at = %s
+                WHERE service_identity_id = %s
+                """,
+                (
+                    record.name,
+                    record.status.value,
+                    datetime.now(tz=timezone.utc),
+                    str(record.service_identity_id),
+                ),
+            )
+        )
+
+    def create_session(self, record: SessionRecord) -> None:
+        self._require_user(record.user_id)
+        self._write(
+            lambda cursor: cursor.execute(
+                """
+                INSERT INTO sessions (
+                    session_id,
+                    user_id,
+                    session_hash,
+                    expires_at,
+                    revoked_at,
+                    created_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    str(record.session_id),
+                    str(record.user_id),
+                    record.token_hash,
+                    record.expires_at,
+                    record.revoked_at,
+                    record.created_at,
+                ),
+            )
+        )
+
+    def get_session_by_token_hash(self, token_hash: str) -> SessionRecord | None:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT session_id,
+                       user_id,
+                       session_hash,
+                       expires_at,
+                       created_at,
+                       revoked_at
+                FROM sessions
+                WHERE session_hash = %s
+                """,
+                (token_hash,),
+            )
+            row = cursor.fetchone()
+        return _session_from_row(row)
+
+    def revoke_session(self, session_id: SessionId, *, revoked_at: datetime) -> None:
+        self._write(
+            lambda cursor: cursor.execute(
+                """
+                UPDATE sessions
+                SET revoked_at = %s
+                WHERE session_id = %s
+                """,
+                (revoked_at, str(session_id)),
+            )
+        )
+
+    def create_bearer_token(self, record: BearerTokenRecord) -> None:
+        self._require_user(record.user_id)
+        self._write(
+            lambda cursor: cursor.execute(
+                """
+                INSERT INTO api_tokens (
+                    api_token_id,
+                    principal_kind,
+                    user_id,
+                    token_hash,
+                    name,
+                    description,
+                    expires_at,
+                    revoked_at,
+                    created_at,
+                    last_used_at
+                )
+                VALUES (%s, 'user', %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    str(record.token_id),
+                    str(record.user_id),
+                    record.token_hash,
+                    record.name,
+                    record.description,
+                    record.expires_at,
+                    record.revoked_at,
+                    record.created_at,
+                    record.last_used_at,
+                ),
+            )
+        )
+
+    def get_bearer_token_by_hash(self, token_hash: str) -> BearerTokenRecord | None:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT api_token_id,
+                       user_id,
+                       token_hash,
+                       name,
+                       description,
+                       created_at,
+                       expires_at,
+                       revoked_at,
+                       last_used_at
+                FROM api_tokens
+                WHERE token_hash = %s
+                  AND principal_kind = 'user'
+                """,
+                (token_hash,),
+            )
+            row = cursor.fetchone()
+        return _bearer_token_from_row(row)
+
+    def get_bearer_token(self, token_id: TokenId) -> BearerTokenRecord | None:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT api_token_id,
+                       user_id,
+                       token_hash,
+                       name,
+                       description,
+                       created_at,
+                       expires_at,
+                       revoked_at,
+                       last_used_at
+                FROM api_tokens
+                WHERE api_token_id = %s
+                  AND principal_kind = 'user'
+                """,
+                (str(token_id),),
+            )
+            row = cursor.fetchone()
+        return _bearer_token_from_row(row)
+
+    def update_bearer_token(self, record: BearerTokenRecord) -> None:
+        self._write(
+            lambda cursor: cursor.execute(
+                """
+                UPDATE api_tokens
+                SET token_hash = %s,
+                    name = %s,
+                    description = %s,
+                    expires_at = %s,
+                    revoked_at = %s,
+                    last_used_at = %s
+                WHERE api_token_id = %s
+                  AND principal_kind = 'user'
+                """,
+                (
+                    record.token_hash,
+                    record.name,
+                    record.description,
+                    record.expires_at,
+                    record.revoked_at,
+                    record.last_used_at,
+                    str(record.token_id),
+                ),
+            )
+        )
+
+    def list_bearer_tokens_for_user(self, user_id: UserId) -> Sequence[BearerTokenRecord]:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT api_token_id,
+                       user_id,
+                       token_hash,
+                       name,
+                       description,
+                       created_at,
+                       expires_at,
+                       revoked_at,
+                       last_used_at
+                FROM api_tokens
+                WHERE user_id = %s
+                  AND principal_kind = 'user'
+                ORDER BY created_at, api_token_id
+                """,
+                (str(user_id),),
+            )
+            rows = cursor.fetchall()
+        return [_bearer_token_from_row(row) for row in rows]
+
     def create_upload(self, record: UploadRecord) -> None:
         self._require_user(record.user_id)
         self._write(
@@ -176,15 +448,21 @@ class PostgresMetadataStore:
                     upload_id,
                     status,
                     original_filename,
+                    content_type,
+                    size_bytes,
+                    multipart_upload_id,
                     created_at
                 )
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     str(record.user_id),
                     str(record.upload_id),
                     record.status.value,
                     record.original_filename,
+                    record.content_type,
+                    record.size_bytes,
+                    record.multipart_upload_id,
                     record.created_at,
                 ),
             )
@@ -194,7 +472,14 @@ class PostgresMetadataStore:
         with self.connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT user_id, upload_id, status, original_filename, created_at
+                SELECT user_id,
+                       upload_id,
+                       status,
+                       original_filename,
+                       content_type,
+                       size_bytes,
+                       multipart_upload_id,
+                       created_at
                 FROM uploads
                 WHERE user_id = %s AND upload_id = %s
                 """,
@@ -207,7 +492,14 @@ class PostgresMetadataStore:
         with self.connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT user_id, upload_id, status, original_filename, created_at
+                SELECT user_id,
+                       upload_id,
+                       status,
+                       original_filename,
+                       content_type,
+                       size_bytes,
+                       multipart_upload_id,
+                       created_at
                 FROM uploads
                 WHERE user_id = %s
                 ORDER BY created_at, upload_id
@@ -216,6 +508,33 @@ class PostgresMetadataStore:
             )
             rows = cursor.fetchall()
         return [_upload_from_row(row) for row in rows]
+
+    def update_upload(self, record: UploadRecord) -> None:
+        self._write(
+            lambda cursor: cursor.execute(
+                """
+                UPDATE uploads
+                SET status = %s,
+                    original_filename = %s,
+                    content_type = %s,
+                    size_bytes = %s,
+                    multipart_upload_id = %s,
+                    completed_at = CASE WHEN %s = 'completed' THEN COALESCE(completed_at, %s) ELSE completed_at END
+                WHERE user_id = %s AND upload_id = %s
+                """,
+                (
+                    record.status.value,
+                    record.original_filename,
+                    record.content_type,
+                    record.size_bytes,
+                    record.multipart_upload_id,
+                    record.status.value,
+                    datetime.now(tz=timezone.utc),
+                    str(record.user_id),
+                    str(record.upload_id),
+                ),
+            )
+        )
 
     def create_run(self, record: RunRecord) -> None:
         self._require_user(record.user_id)
@@ -226,15 +545,19 @@ class PostgresMetadataStore:
                     user_id,
                     run_id,
                     status,
+                    upload_id,
+                    description,
                     provider_config_version_id,
                     created_at
                 )
-                VALUES (%s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     str(record.user_id),
                     str(record.run_id),
                     record.status.value,
+                    str(record.upload_id) if record.upload_id is not None else None,
+                    record.description,
                     str(record.provider_config_version_id)
                     if record.provider_config_version_id is not None
                     else None,
@@ -247,7 +570,13 @@ class PostgresMetadataStore:
         with self.connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT user_id, run_id, status, provider_config_version_id, created_at
+                SELECT user_id,
+                       run_id,
+                       status,
+                       upload_id,
+                       description,
+                       provider_config_version_id,
+                       created_at
                 FROM runs
                 WHERE user_id = %s AND run_id = %s
                 """,
@@ -260,7 +589,13 @@ class PostgresMetadataStore:
         with self.connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT user_id, run_id, status, provider_config_version_id, created_at
+                SELECT user_id,
+                       run_id,
+                       status,
+                       upload_id,
+                       description,
+                       provider_config_version_id,
+                       created_at
                 FROM runs
                 WHERE user_id = %s
                 ORDER BY created_at, run_id
@@ -269,6 +604,39 @@ class PostgresMetadataStore:
             )
             rows = cursor.fetchall()
         return [_run_from_row(row) for row in rows]
+
+    def update_run(self, record: RunRecord) -> None:
+        self._write(
+            lambda cursor: cursor.execute(
+                """
+                UPDATE runs
+                SET status = %s,
+                    upload_id = %s,
+                    description = %s,
+                    provider_config_version_id = %s,
+                    started_at = CASE WHEN %s = 'running' THEN COALESCE(started_at, %s) ELSE started_at END,
+                    completed_at = CASE WHEN %s IN ('succeeded', 'failed') THEN COALESCE(completed_at, %s) ELSE completed_at END,
+                    cancelled_at = CASE WHEN %s = 'cancelled' THEN COALESCE(cancelled_at, %s) ELSE cancelled_at END
+                WHERE user_id = %s AND run_id = %s
+                """,
+                (
+                    record.status.value,
+                    str(record.upload_id) if record.upload_id is not None else None,
+                    record.description,
+                    str(record.provider_config_version_id)
+                    if record.provider_config_version_id is not None
+                    else None,
+                    record.status.value,
+                    datetime.now(tz=timezone.utc),
+                    record.status.value,
+                    datetime.now(tz=timezone.utc),
+                    record.status.value,
+                    datetime.now(tz=timezone.utc),
+                    str(record.user_id),
+                    str(record.run_id),
+                ),
+            )
+        )
 
     def create_job(
         self,
@@ -315,6 +683,38 @@ class PostgresMetadataStore:
             )
             row = cursor.fetchone()
         return _job_from_row(row)
+
+    def get_job_by_id(self, job_id: JobId) -> JobRecord | None:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id, run_id, job_id, status, created_at
+                FROM jobs
+                WHERE job_id = %s
+                """,
+                (str(job_id),),
+            )
+            row = cursor.fetchone()
+        return _job_from_row(row)
+
+    def update_job(self, record: JobRecord) -> None:
+        self._write(
+            lambda cursor: cursor.execute(
+                """
+                UPDATE jobs
+                SET status = %s,
+                    completed_at = CASE WHEN %s IN ('succeeded', 'failed', 'cancelled', 'dead_lettered') THEN COALESCE(completed_at, %s) ELSE completed_at END
+                WHERE user_id = %s AND job_id = %s
+                """,
+                (
+                    record.status.value,
+                    record.status.value,
+                    datetime.now(tz=timezone.utc),
+                    str(record.user_id),
+                    str(record.job_id),
+                ),
+            )
+        )
 
     def claim_job(
         self,
@@ -471,6 +871,15 @@ class PostgresMetadataStore:
             now=_coerce_now(now),
         )
 
+    def complete_job(self, lease: JobLease, *, now: datetime | None = None) -> None:
+        completed_at = _coerce_now(now)
+        self._transition_active_lease_to_terminal(
+            lease,
+            status=JobStatus.SUCCEEDED,
+            reason="completed",
+            now=completed_at,
+        )
+
     def cancel_job(
         self,
         job_id: JobId,
@@ -541,9 +950,10 @@ class PostgresMetadataStore:
                     stage,
                     artifact_type,
                     object_key,
+                    manifest,
                     created_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     str(record.user_id),
@@ -553,6 +963,7 @@ class PostgresMetadataStore:
                     record.stage.value,
                     record.artifact_type.value,
                     object_key or str(record.artifact_id),
+                    {"has_markdown": record.has_markdown},
                     record.created_at,
                 ),
             )
@@ -567,7 +978,13 @@ class PostgresMetadataStore:
         with self.connection.cursor() as cursor:
             cursor.execute(
                 """
-                SELECT user_id, run_id, artifact_id, stage, artifact_type, created_at
+                SELECT user_id,
+                       run_id,
+                       artifact_id,
+                       stage,
+                       artifact_type,
+                       COALESCE((manifest ->> 'has_markdown')::boolean, false),
+                       created_at
                 FROM artifacts
                 WHERE user_id = %s AND artifact_id = %s
                 """,
@@ -575,6 +992,31 @@ class PostgresMetadataStore:
             )
             row = cursor.fetchone()
         return _artifact_from_row(row)
+
+    def list_run_artifacts(
+        self,
+        *,
+        user_id: UserId,
+        run_id: RunId,
+    ) -> Sequence[ArtifactRecord]:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT user_id,
+                       run_id,
+                       artifact_id,
+                       stage,
+                       artifact_type,
+                       COALESCE((manifest ->> 'has_markdown')::boolean, false),
+                       created_at
+                FROM artifacts
+                WHERE user_id = %s AND run_id = %s
+                ORDER BY created_at, artifact_id
+                """,
+                (str(user_id), str(run_id)),
+            )
+            rows = cursor.fetchall()
+        return [_artifact_from_row(row) for row in rows]
 
     def put_artifact_document_chunk(
         self,
@@ -1157,7 +1599,11 @@ class PostgresMetadataStore:
                         queued_at = %s
                     WHERE job_id = %s
                       AND lease_id = %s
-                      AND status IN ('claimed', 'running')
+                      AND status IN (
+                        'queued',
+                        'claimed',
+                        'running'
+                      )
                     RETURNING job_id
                     """,
                     (now, str(lease.job_id), lease.lease_id),
@@ -1197,7 +1643,13 @@ class PostgresMetadataStore:
                         completed_at = %s
                     WHERE job_id = %s
                       AND lease_id = %s
-                      AND status IN ('claimed', 'running')
+                      AND status IN (
+                        'claimed',
+                        'running',
+                        'succeeded',
+                        'failed',
+                        'dead_lettered'
+                      )
                     RETURNING job_id
                     """,
                     (now, str(lease.job_id), lease.lease_id),
@@ -1208,7 +1660,7 @@ class PostgresMetadataStore:
                 _record_attempt_completion(
                     cursor,
                     lease=lease,
-                    status=JobStatus.FAILED,
+                    status=status,
                     completed_at=now,
                     reason=reason,
                 )
@@ -1230,11 +1682,16 @@ class PostgresMetadataStore:
 def _user_from_row(row: tuple[Any, ...] | None) -> UserRecord | None:
     if row is None:
         return None
-    user_id, username, status, created_at = row
+    if len(row) == 5:
+        user_id, username, status, password_hash, created_at = row
+    else:
+        user_id, username, status, created_at = row
+        password_hash = None
     return UserRecord(
         user_id=UserId(str(user_id)),
         username=username,
         status=UserStatus(status),
+        password_hash=password_hash,
         created_at=created_at,
     )
 
@@ -1256,12 +1713,30 @@ def _service_identity_from_row(
 def _upload_from_row(row: tuple[Any, ...] | None) -> UploadRecord | None:
     if row is None:
         return None
-    user_id, upload_id, status, original_filename, created_at = row
+    if len(row) == 8:
+        (
+            user_id,
+            upload_id,
+            status,
+            original_filename,
+            content_type,
+            size_bytes,
+            multipart_upload_id,
+            created_at,
+        ) = row
+    else:
+        user_id, upload_id, status, original_filename, created_at = row
+        content_type = None
+        size_bytes = None
+        multipart_upload_id = None
     return UploadRecord(
         user_id=UserId(str(user_id)),
         upload_id=UploadId(str(upload_id)),
         status=UploadStatus(status),
         original_filename=original_filename,
+        content_type=content_type,
+        size_bytes=int(size_bytes) if size_bytes is not None else None,
+        multipart_upload_id=multipart_upload_id,
         created_at=created_at,
     )
 
@@ -1269,11 +1744,26 @@ def _upload_from_row(row: tuple[Any, ...] | None) -> UploadRecord | None:
 def _run_from_row(row: tuple[Any, ...] | None) -> RunRecord | None:
     if row is None:
         return None
-    user_id, run_id, status, provider_config_version_id, created_at = row
+    if len(row) == 7:
+        (
+            user_id,
+            run_id,
+            status,
+            upload_id,
+            description,
+            provider_config_version_id,
+            created_at,
+        ) = row
+    else:
+        user_id, run_id, status, provider_config_version_id, created_at = row
+        upload_id = None
+        description = None
     return RunRecord(
         user_id=UserId(str(user_id)),
         run_id=RunId(str(run_id)),
         status=RunStatus(status),
+        upload_id=UploadId(str(upload_id)) if upload_id is not None else None,
+        description=description,
         provider_config_version_id=(
             ProviderConfigVersionId(str(provider_config_version_id))
             if provider_config_version_id is not None
@@ -1299,14 +1789,65 @@ def _job_from_row(row: tuple[Any, ...] | None) -> JobRecord | None:
 def _artifact_from_row(row: tuple[Any, ...] | None) -> ArtifactRecord | None:
     if row is None:
         return None
-    user_id, run_id, artifact_id, stage, artifact_type, created_at = row
+    if len(row) == 7:
+        user_id, run_id, artifact_id, stage, artifact_type, has_markdown, created_at = row
+    else:
+        user_id, run_id, artifact_id, stage, artifact_type, created_at = row
+        has_markdown = False
     return ArtifactRecord(
         user_id=UserId(str(user_id)),
         run_id=RunId(str(run_id)),
         artifact_id=ArtifactId(str(artifact_id)),
         stage=ArtifactStage(stage),
         artifact_type=ArtifactType(artifact_type),
+        has_markdown=bool(has_markdown),
         created_at=created_at,
+    )
+
+
+def _session_from_row(row: tuple[Any, ...] | None) -> SessionRecord | None:
+    if row is None:
+        return None
+    session_id, user_id, token_hash, expires_at, created_at, revoked_at = row
+    return SessionRecord(
+        session_id=SessionId(str(session_id)),
+        user_id=UserId(str(user_id)),
+        token_hash=token_hash,
+        expires_at=expires_at,
+        created_at=created_at,
+        revoked_at=revoked_at,
+    )
+
+
+def _bearer_token_from_row(row: tuple[Any, ...] | None) -> BearerTokenRecord | None:
+    if row is None:
+        return None
+    if len(row) == 9:
+        (
+            token_id,
+            user_id,
+            token_hash,
+            name,
+            description,
+            created_at,
+            expires_at,
+            revoked_at,
+            last_used_at,
+        ) = row
+    else:
+        token_id, user_id, token_hash, created_at, expires_at, revoked_at, last_used_at = row
+        name = str(token_id)
+        description = None
+    return BearerTokenRecord(
+        token_id=TokenId(str(token_id)),
+        user_id=UserId(str(user_id)),
+        token_hash=token_hash,
+        name=name,
+        description=description,
+        created_at=created_at,
+        expires_at=expires_at,
+        revoked_at=revoked_at,
+        last_used_at=last_used_at,
     )
 
 

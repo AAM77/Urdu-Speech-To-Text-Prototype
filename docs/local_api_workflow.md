@@ -8,14 +8,12 @@ Current status:
 
 - `docker compose` validates the API, processor, PostgreSQL, MinIO, Redis, and
   optional Nginx proxy service topology.
-- `make compose-test` is wired as the stack smoke target, but it still needs a
-  running Docker/Colima daemon.
-- The API container currently starts the FastAPI app and exposes `/health`.
-  Full route execution still needs production `AppState` adapter wiring from
-  environment into the container.
-- The processor service currently validates `urdu-pipeline process --dry-run`,
-  writes `/tmp/processor-ready`, and stays alive. The long-running processor
-  CLI loop is not wired yet.
+- `make compose-test` is wired as the stack smoke target and runs the
+  fake-provider API-to-processor E2E workflow when Docker is available.
+- The API container starts the FastAPI runtime app with PostgreSQL, MinIO, and
+  Redis adapters.
+- The processor service runs the real polling loop, writes
+  `/tmp/processor-ready`, and processes queued local fake-provider jobs.
 
 ## Start And Setup
 
@@ -263,7 +261,5 @@ removed with Docker volume commands.
 - Do not use `.env.local.example` secrets outside local development.
 - The local fake-provider mode is the intended default until real-provider
   smoke tests are explicitly planned.
-- The local stack does not yet run a full fake-provider API-to-processor E2E;
-  that is Step 6.2.3.
-- The processor command shell still needs the real long-running loop before
-  compose can complete queued jobs.
+- The local stack runs the full fake-provider API-to-processor E2E through
+  `make compose-test`, but it requires a running Docker/Colima daemon.

@@ -1333,7 +1333,7 @@
           "runs"
         ],
         "summary": "Get Run Events",
-        "description": "Return pipeline events for a run.\n\nOwnership is verified before returning events; returns 404 if the run\ndoes not exist or belongs to another caller.\n\nNote: event persistence is not yet implemented.  This endpoint returns\nan empty list until a durable event store is wired in (Stage 5).",
+        "description": "Return pipeline events for a run.\n\nOwnership is verified before returning events; returns 404 if the run\ndoes not exist or belongs to another caller.\n\nStores that implement durable stage events return them here.  Simpler test\nstores can omit that optional method and get an empty list.",
         "operationId": "get_run_events_runs__run_id__events_get",
         "parameters": [
           {

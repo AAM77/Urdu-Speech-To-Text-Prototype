@@ -5,6 +5,7 @@ from urdu_pipeline.infrastructure.filesystem import (
     FilesystemCacheStore,
     FilesystemRunWorkspace,
 )
+from urdu_pipeline.infrastructure.artifacts import ObjectStoreArtifactRepository
 from urdu_pipeline.infrastructure.in_memory import (
     InMemoryBudgetService,
     InMemoryCacheStore,
@@ -32,6 +33,7 @@ __all__ = [
     "InMemoryProviderRegistry",
     "InMemorySecretProvider",
     "InMemoryUsageLedger",
+    "ObjectStoreArtifactRepository",
     "RedisJobQueue",
     "S3ObjectStore",
 ]

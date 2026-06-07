@@ -9,10 +9,12 @@ import pytest
 
 from urdu_pipeline.application.ports import (
     ArtifactRecord,
+    BearerTokenRecord,
     CacheScope,
     JobRecord,
     ProviderConfigSnapshot,
     RunRecord,
+    SessionRecord,
     ServiceIdentityRecord,
     UploadRecord,
     UserRecord,
@@ -31,6 +33,8 @@ from urdu_pipeline.domain import (
     ProviderRunId,
     RunId,
     RunStatus,
+    SessionId,
+    TokenId,
     ServiceIdentityId,
     ServiceIdentityStatus,
     UploadId,
@@ -66,18 +70,160 @@ class FakeCursor:
             self.connection.maybe_fail("users")
             assert params is not None
             self.connection.users[params[0]] = params
+        elif statement.startswith("select user_id, username") and "where username = %s" in statement:
+            assert params is not None
+            (username,) = params
+            row = next(
+                (row for row in self.connection.users.values() if row[1] == username),
+                None,
+            )
+            self._row = (
+                (row[0], row[1], row[2], row[3], row[4]) if row is not None else None
+            )
+        elif statement.startswith("select user_id, username") and "order by created_at, user_id" in statement:
+            self._rows = sorted(
+                [
+                    (row[0], row[1], row[2], row[3], row[4])
+                    for row in self.connection.users.values()
+                ],
+                key=lambda row: (row[-1], row[0]),
+            )
         elif statement.startswith("select user_id, username"):
             assert params is not None
             row = self.connection.users.get(params[0])
-            self._row = row[:4] if row is not None else None
+            self._row = (
+                (row[0], row[1], row[2], row[3], row[4]) if row is not None else None
+            )
+        elif statement.startswith("update users"):
+            assert params is not None
+            username, status, password_hash, _updated_at, user_id = params
+            row = self.connection.users.get(user_id)
+            if row is not None:
+                self.connection.users[user_id] = (
+                    user_id,
+                    username,
+                    status,
+                    password_hash,
+                    row[4],
+                    _updated_at,
+                )
         elif statement.startswith("insert into service_identities"):
             self.connection.maybe_fail("service_identities")
             assert params is not None
             self.connection.service_identities[params[0]] = params
+        elif statement.startswith("select service_identity_id") and "where name = %s" in statement:
+            assert params is not None
+            (name,) = params
+            self._row = next(
+                (row[:4] for row in self.connection.service_identities.values() if row[1] == name),
+                None,
+            )
         elif statement.startswith("select service_identity_id"):
             assert params is not None
             row = self.connection.service_identities.get(params[0])
             self._row = row[:4] if row is not None else None
+        elif statement.startswith("update service_identities"):
+            assert params is not None
+            name, status, _updated_at, service_identity_id = params
+            row = self.connection.service_identities.get(service_identity_id)
+            if row is not None:
+                self.connection.service_identities[service_identity_id] = (
+                    service_identity_id,
+                    name,
+                    status,
+                    row[3],
+                    row[4],
+                )
+        elif statement.startswith("insert into sessions"):
+            assert params is not None
+            session_id, user_id, token_hash, expires_at, revoked_at, created_at = params
+            self.connection.sessions[session_id] = (
+                session_id,
+                user_id,
+                token_hash,
+                expires_at,
+                created_at,
+                revoked_at,
+            )
+            self.connection.sessions_by_hash[token_hash] = session_id
+        elif statement.startswith("select session_id"):
+            assert params is not None
+            (token_hash,) = params
+            session_id = self.connection.sessions_by_hash.get(token_hash)
+            self._row = self.connection.sessions.get(session_id) if session_id else None
+        elif statement.startswith("update sessions"):
+            assert params is not None
+            revoked_at, session_id = params
+            row = self.connection.sessions.get(session_id)
+            if row is not None:
+                updated = (row[0], row[1], row[2], row[3], row[4], revoked_at)
+                self.connection.sessions[session_id] = updated
+        elif statement.startswith("insert into api_tokens"):
+            assert params is not None
+            (
+                token_id,
+                user_id,
+                token_hash,
+                name,
+                description,
+                expires_at,
+                revoked_at,
+                created_at,
+                last_used_at,
+            ) = params
+            row = (
+                token_id,
+                user_id,
+                token_hash,
+                name,
+                description,
+                created_at,
+                expires_at,
+                revoked_at,
+                last_used_at,
+            )
+            self.connection.api_tokens[token_id] = row
+            self.connection.api_tokens_by_hash[token_hash] = token_id
+        elif statement.startswith("select api_token_id") and "where token_hash = %s" in statement:
+            assert params is not None
+            (token_hash,) = params
+            token_id = self.connection.api_tokens_by_hash.get(token_hash)
+            self._row = self.connection.api_tokens.get(token_id) if token_id else None
+        elif statement.startswith("select api_token_id") and "where api_token_id = %s" in statement:
+            assert params is not None
+            self._row = self.connection.api_tokens.get(params[0])
+        elif statement.startswith("select api_token_id") and "where user_id = %s" in statement:
+            assert params is not None
+            (user_id,) = params
+            self._rows = [
+                row for row in self.connection.api_tokens.values() if row[1] == user_id
+            ]
+        elif statement.startswith("update api_tokens"):
+            assert params is not None
+            (
+                token_hash,
+                name,
+                description,
+                expires_at,
+                revoked_at,
+                last_used_at,
+                token_id,
+            ) = params
+            row = self.connection.api_tokens.get(token_id)
+            if row is not None:
+                updated = (
+                    token_id,
+                    row[1],
+                    token_hash,
+                    name,
+                    description,
+                    row[5],
+                    expires_at,
+                    revoked_at,
+                    last_used_at,
+                )
+                self.connection.api_tokens[token_id] = updated
+                self.connection.api_tokens_by_hash[token_hash] = token_id
         elif statement.startswith("insert into uploads"):
             self.connection.maybe_fail("uploads")
             assert params is not None
@@ -96,6 +242,31 @@ class FakeCursor:
             user_id, upload_id = params
             row = self.connection.uploads.get(upload_id)
             self._row = row if row is not None and row[0] == user_id else None
+        elif statement.startswith("update uploads"):
+            assert params is not None
+            (
+                status,
+                original_filename,
+                content_type,
+                size_bytes,
+                multipart_upload_id,
+                _status_probe,
+                _completed_at,
+                user_id,
+                upload_id,
+            ) = params
+            row = self.connection.uploads.get(upload_id)
+            if row is not None and row[0] == user_id:
+                self.connection.uploads[upload_id] = (
+                    user_id,
+                    upload_id,
+                    status,
+                    original_filename,
+                    content_type,
+                    size_bytes,
+                    multipart_upload_id,
+                    row[-1],
+                )
         elif statement.startswith("insert into runs"):
             self.connection.maybe_fail("runs")
             assert params is not None
@@ -121,9 +292,13 @@ class FakeCursor:
             }
         elif statement.startswith("select user_id, run_id, job_id"):
             assert params is not None
-            user_id, job_id = params
+            if len(params) == 1:
+                (job_id,) = params
+                user_id = None
+            else:
+                user_id, job_id = params
             job = self.connection.jobs.get(job_id)
-            if job is None or job["user_id"] != user_id:
+            if job is None or (user_id is not None and job["user_id"] != user_id):
                 self._row = None
             else:
                 self._row = (
@@ -133,6 +308,14 @@ class FakeCursor:
                     job["status"],
                     job["created_at"],
                 )
+        elif statement.startswith("update jobs") and "set status = %s" in statement:
+            assert params is not None
+            status, _status_probe, completed_at, user_id, job_id = params
+            job = self.connection.jobs.get(job_id)
+            if job is not None and job["user_id"] == user_id:
+                job["status"] = status
+                if status in {"succeeded", "failed", "cancelled", "dead_lettered"}:
+                    job["completed_at"] = job["completed_at"] or completed_at
         elif statement.startswith("update jobs") and "set status = 'claimed'" in statement:
             assert params is not None
             (
@@ -239,6 +422,10 @@ class FakeCursor:
             assert params is not None
             completed_at, job_id, lease_id = params
             self._update_terminal_job(job_id, lease_id, "failed", completed_at)
+        elif statement.startswith("update jobs") and "set status = 'succeeded'" in statement:
+            assert params is not None
+            completed_at, job_id, lease_id = params
+            self._update_terminal_job(job_id, lease_id, "succeeded", completed_at)
         elif statement.startswith("update jobs") and "set status = 'dead_lettered'" in statement:
             assert params is not None
             completed_at, job_id, lease_id = params
@@ -271,7 +458,7 @@ class FakeCursor:
                 attempt["error_message"] = reason
         elif statement.startswith("insert into artifacts"):
             assert params is not None
-            user_id, run_id, job_id, artifact_id, stage, artifact_type, object_key, created_at = params
+            user_id, run_id, job_id, artifact_id, stage, artifact_type, object_key, manifest, created_at = params
             self.connection.artifacts[artifact_id] = {
                 "user_id": user_id,
                 "run_id": run_id,
@@ -280,8 +467,25 @@ class FakeCursor:
                 "stage": stage,
                 "artifact_type": artifact_type,
                 "object_key": object_key,
+                "manifest": manifest,
                 "created_at": created_at,
             }
+        elif statement.startswith("select user_id, run_id, artifact_id") and "where user_id = %s and run_id = %s" in statement:
+            assert params is not None
+            user_id, run_id = params
+            self._rows = [
+                (
+                    artifact["user_id"],
+                    artifact["run_id"],
+                    artifact["artifact_id"],
+                    artifact["stage"],
+                    artifact["artifact_type"],
+                    bool(artifact.get("manifest", {}).get("has_markdown", False)),
+                    artifact["created_at"],
+                )
+                for artifact in self.connection.artifacts.values()
+                if artifact["user_id"] == user_id and artifact["run_id"] == run_id
+            ]
         elif statement.startswith("select user_id, run_id, artifact_id"):
             assert params is not None
             user_id, artifact_id = params
@@ -293,6 +497,7 @@ class FakeCursor:
                     artifact["artifact_id"],
                     artifact["stage"],
                     artifact["artifact_type"],
+                    bool(artifact.get("manifest", {}).get("has_markdown", False)),
                     artifact["created_at"],
                 )
                 if artifact is not None and artifact["user_id"] == user_id
@@ -490,6 +695,33 @@ class FakeCursor:
             user_id, run_id = params
             row = self.connection.runs.get(run_id)
             self._row = row if row is not None and row[0] == user_id else None
+        elif statement.startswith("update runs"):
+            assert params is not None
+            (
+                status,
+                upload_id,
+                description,
+                provider_config_version_id,
+                _running_status,
+                _started_at,
+                _terminal_status,
+                _completed_at,
+                _cancel_status,
+                _cancelled_at,
+                user_id,
+                run_id,
+            ) = params
+            row = self.connection.runs.get(run_id)
+            if row is not None and row[0] == user_id:
+                self.connection.runs[run_id] = (
+                    user_id,
+                    run_id,
+                    status,
+                    upload_id,
+                    description,
+                    provider_config_version_id,
+                    row[-1],
+                )
         else:
             raise AssertionError(f"unexpected SQL: {sql}")
 
@@ -522,6 +754,10 @@ class FakeConnection:
     def __init__(self) -> None:
         self.users: dict[str, tuple[Any, ...]] = {}
         self.service_identities: dict[str, tuple[Any, ...]] = {}
+        self.sessions: dict[str, tuple[Any, ...]] = {}
+        self.sessions_by_hash: dict[str, str] = {}
+        self.api_tokens: dict[str, tuple[Any, ...]] = {}
+        self.api_tokens_by_hash: dict[str, str] = {}
         self.uploads: dict[str, tuple[Any, ...]] = {}
         self.runs: dict[str, tuple[Any, ...]] = {}
         self.jobs: dict[str, dict[str, Any]] = {}
@@ -579,6 +815,144 @@ def test_postgres_metadata_store_creates_and_reads_user_and_service_identity():
     assert store.get_service_identity(service.service_identity_id) == service
     assert connection.commits == 2
     assert connection.rollbacks == 0
+
+
+def test_postgres_metadata_store_supports_runtime_auth_and_lifecycle_updates():
+    connection = FakeConnection()
+    store = PostgresMetadataStore(connection)
+    user = UserRecord(
+        user_id=UserId.new(),
+        username="local_user",
+        status=UserStatus.ACTIVE,
+        password_hash="HASHED:local_password",
+        created_at=_utc(2026, 1, 2),
+    )
+    store.create_user(user)
+
+    assert store.get_user(user.user_id) == user
+    assert store.get_user_by_username("local_user") == user
+
+    disabled = UserRecord(
+        user_id=user.user_id,
+        username=user.username,
+        status=UserStatus.DISABLED,
+        password_hash="HASHED:new_password",
+        created_at=user.created_at,
+    )
+    store.update_user(disabled)
+    assert store.get_user(user.user_id) == disabled
+    assert store.list_users() == [disabled]
+
+    session = SessionRecord(
+        session_id=SessionId.new(),
+        user_id=user.user_id,
+        token_hash="session-token-hash",
+        expires_at=_utc(2026, 1, 9),
+        created_at=_utc(2026, 1, 2),
+    )
+    store.create_session(session)
+    assert store.get_session_by_token_hash("session-token-hash") == session
+    store.revoke_session(session.session_id, revoked_at=_utc(2026, 1, 8))
+    revoked = store.get_session_by_token_hash("session-token-hash")
+    assert revoked is not None
+    assert revoked.revoked_at == _utc(2026, 1, 8)
+
+    token = BearerTokenRecord(
+        token_id=TokenId.new(),
+        user_id=user.user_id,
+        token_hash="bearer-token-hash",
+        name="local automation",
+        description="local compose token",
+        created_at=_utc(2026, 1, 2),
+        expires_at=_utc(2026, 1, 10),
+    )
+    store.create_bearer_token(token)
+    assert store.get_bearer_token(token.token_id) == token
+    assert store.get_bearer_token_by_hash("bearer-token-hash") == token
+    assert store.list_bearer_tokens_for_user(user.user_id) == [token]
+
+    upload = UploadRecord(
+        user_id=user.user_id,
+        upload_id=UploadId.new(),
+        status=UploadStatus.INITIALIZED,
+        original_filename="sample.wav",
+        content_type="audio/wav",
+        size_bytes=44,
+        created_at=_utc(2026, 1, 3),
+    )
+    store.create_upload(upload)
+    completed_upload = UploadRecord(
+        user_id=user.user_id,
+        upload_id=upload.upload_id,
+        status=UploadStatus.COMPLETED,
+        original_filename=upload.original_filename,
+        content_type=upload.content_type,
+        size_bytes=upload.size_bytes,
+        created_at=upload.created_at,
+    )
+    store.update_upload(completed_upload)
+    assert store.get_upload(
+        user_id=user.user_id,
+        upload_id=upload.upload_id,
+    ) == completed_upload
+
+    run = RunRecord(
+        user_id=user.user_id,
+        run_id=RunId.new(),
+        status=RunStatus.PENDING,
+        upload_id=upload.upload_id,
+        description="compose fake-provider run",
+        created_at=_utc(2026, 1, 4),
+    )
+    store.create_run(run)
+    running = RunRecord(
+        user_id=user.user_id,
+        run_id=run.run_id,
+        status=RunStatus.RUNNING,
+        upload_id=run.upload_id,
+        description=run.description,
+        created_at=run.created_at,
+    )
+    store.update_run(running)
+    assert store.get_run(user_id=user.user_id, run_id=run.run_id) == running
+
+    job = JobRecord(
+        user_id=user.user_id,
+        run_id=run.run_id,
+        job_id=JobId.new(),
+        status=JobStatus.RUNNING,
+        created_at=_utc(2026, 1, 5),
+    )
+    store.create_job(job, stage=ArtifactStage.CHUNKER)
+    succeeded_job = JobRecord(
+        user_id=user.user_id,
+        run_id=run.run_id,
+        job_id=job.job_id,
+        status=JobStatus.SUCCEEDED,
+        created_at=job.created_at,
+    )
+    store.update_job(succeeded_job)
+    assert store.get_job_by_id(job.job_id) == succeeded_job
+
+    artifact = ArtifactRecord(
+        user_id=user.user_id,
+        run_id=run.run_id,
+        artifact_id=ArtifactId.new(),
+        stage=ArtifactStage.ARTICLE_GENERATOR,
+        artifact_type=ArtifactType.FINAL_ARTICLE,
+        has_markdown=True,
+        created_at=_utc(2026, 1, 6),
+    )
+    store.record_artifact(
+        artifact,
+        job_id=job.job_id,
+        object_key=f"artifacts/{artifact.artifact_id}.json",
+    )
+    assert store.list_run_artifacts(user_id=user.user_id, run_id=run.run_id) == [artifact]
+    assert store.get_artifact(
+        user_id=user.user_id,
+        artifact_id=artifact.artifact_id,
+    ) == artifact
 
 
 def test_postgres_metadata_store_enforces_upload_ownership_and_lists_by_user():

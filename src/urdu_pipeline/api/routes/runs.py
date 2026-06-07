@@ -196,11 +196,25 @@ def get_run_events(
     Ownership is verified before returning events; returns 404 if the run
     does not exist or belongs to another caller.
 
-    Note: event persistence is not yet implemented.  This endpoint returns
-    an empty list until a durable event store is wired in (Stage 5).
+    Stores that implement durable stage events return them here.  Simpler test
+    stores can omit that optional method and get an empty list.
     """
-    _resolve_run(run_id, principal, metadata_store)
-    return EventListResponse(events=[])
+    run = _resolve_run(run_id, principal, metadata_store)
+    list_events = getattr(metadata_store, "list_stage_events", None)
+    if not callable(list_events):
+        return EventListResponse(events=[])
+    records = list_events(user_id=run.user_id, run_id=run.run_id)
+    return EventListResponse(
+        events=[
+            {
+                "event_id": f"{record.run_id}:{index}",
+                "run_id": str(record.run_id),
+                "event_type": record.event_type,
+                "created_at": record.created_at,
+            }
+            for index, record in enumerate(records)
+        ]
+    )
 
 
 @router.post(

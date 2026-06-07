@@ -58,28 +58,36 @@ Completed through:
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
 - Stage 4 (complete)
 - Stage 5 (complete)
-- Stage 6 through Step 6.2.2
+- Stage 6 (complete)
 
 Next step in the original plan:
 
-- Stage 6: Step 6.2.3 — Add Compose Fake-Provider E2E Test
+- Stage 7: Step 7.1.1 — Harden Structured Logging And Redaction
 
 Most recent verification:
 
-- Combined unit + safe integration: `815 passed, 3 skipped`
+- Combined unit + safe integration: `825 passed, 3 skipped`
+- Targeted compose fake-provider E2E contract tests: `10 passed`
+- Affected compose/packaging/Makefile/migration/Postgres/API route tests:
+  `216 passed`
 - Targeted container packaging tests: `3 passed`
 - Targeted Compose service tests: `5 passed`
 - Targeted Compose + Makefile tests: `26 passed`
 - Makefile local stack tests: `21 passed`
 - Local workflow docs tests: `2 passed`
 - Targeted docs + compose + Makefile tests: `28 passed`
+- `docker compose --env-file .env.local.example config`: passed
 - `make --no-print-directory -n compose-setup`: passed dry-run command review
 - `make --no-print-directory -n compose-test`: passed dry-run command review
+- `make --no-print-directory -n compose-fake-provider-e2e`: passed dry-run
+  command review
 - `docker compose --env-file .env.local.example --profile proxy config`: passed
 - `git diff --check`: passed
 - Docker build/start smoke attempted, but Docker daemon was not reachable at
   `unix:///Users/madeel/.colima/default/docker.sock`; image builds and service
   startup still need to be run once Colima/Docker is started.
+- Real `make compose-test` attempted after Step 6.2.3, but Docker daemon was
+  not reachable at `unix:///Users/madeel/.colima/default/docker.sock`.
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -1162,14 +1170,16 @@ What was done (strict TDD — tests written and confirmed failing before impleme
 - Added `deploy/nginx/default.conf` to proxy all requests to `http://api:8000`
   while forwarding common proxy headers.
 
-Important limitation:
+Important limitation at the time of Step 6.1.2:
 
-- The processor service currently runs `urdu-pipeline process --dry-run`, marks
+- The processor service ran `urdu-pipeline process --dry-run`, marked
   itself ready, and stays alive. This is explicit rather than hidden: the
   existing CLI `process` command validates service auth but still exits because
   the long-running command-shell loop has not yet been wired into `cli.py`.
   The pure lifecycle and stage functions exist from Stage 5, but the CLI shell
   still needs future integration before a real compose E2E can process jobs.
+- Resolved by Step 6.2.3: the compose processor now runs the real polling loop
+  and `make compose-test` is wired to the fake-provider E2E smoke.
 
 Verification:
 
@@ -1325,9 +1335,9 @@ What was done (TDD-style documentation validation):
   - retry and cleanup behavior from the processor lifecycle/idempotency/cleanup
     modules;
   - object-key non-disclosure and opaque server-side object key derivation;
-  - current local limitations: API container lacks env-built production
-    `AppState`, processor command shell is still dry-run, and full compose E2E
-    remains Step 6.2.3.
+  - then-current local limitations before Step 6.2.3: API container lacked
+    env-built production `AppState`, processor command shell was still dry-run,
+    and full compose E2E remained pending.
 - Updated `README.md` with a short "Local API-backed workflow" section that
   links to `docs/local_api_workflow.md`.
 
@@ -1358,6 +1368,125 @@ Why it was needed:
 Needed for provider switch only?
 
 - No. This is local API/backend workflow documentation.
+
+### Step 6.2.3: Add Compose Fake-Provider E2E Test
+
+What was done (strict TDD):
+
+- Added failing tests before implementation:
+  - `tests/unit/test_runtime_app_state.py` for environment-backed API
+    `AppState` wiring.
+  - `tests/unit/test_durable_artifact_repository.py` for durable artifact JSON,
+    Markdown, metadata, and document chunk persistence.
+  - `tests/unit/test_processor_cli_runtime.py` for real processor CLI loop
+    invocation and bounded `--once` behavior.
+  - `tests/unit/test_compose_fake_provider_e2e.py` for compose wiring that runs
+    the real processor loop and invokes the fake-provider E2E smoke module.
+  - Expanded migration/Postgres metadata tests for password hashes, sessions,
+    upload/run/job updates, artifact markdown metadata, and job completion.
+- The red targeted run failed for expected missing pieces: no runtime API
+  factory, no durable artifact repository, no processor loop hook, compose still
+  used `--dry-run`, no migration `0004`, and Postgres user records did not
+  round-trip `password_hash`.
+- Added `src/urdu_pipeline/api/runtime.py`:
+  - Builds production/local `AppState` from environment-backed settings.
+  - Wires `PostgresMetadataStore`, `S3ObjectStore`, `RedisJobQueue`,
+    `EnvSecretProvider`, and `SERVICE_AUTH_TOKEN`.
+- Added `src/urdu_pipeline/infrastructure/artifacts.py`:
+  - Persists artifact JSON and Markdown into object storage under
+    route-compatible opaque keys.
+  - Records safe artifact metadata and document chunks.
+- Added `src/urdu_pipeline/processor/runtime.py`:
+  - Runs a polling processor loop.
+  - Pings `/internal/ping` with `SERVICE_AUTH_TOKEN`.
+  - Claims jobs through Redis/Postgres.
+  - Materializes uploaded audio from object storage.
+  - Runs chunker, fake-provider transcriber, reconciler, translator, and article
+    stages.
+  - Persists JSON/Markdown artifacts, stage events, document chunks, and cleans
+    temp run object prefixes.
+- Updated `urdu-pipeline process`:
+  - Keeps `--dry-run` as configuration validation.
+  - Adds `--once` for bounded processor runs/tests.
+  - Calls the real `run_processor(...)` loop otherwise.
+- Added `src/urdu_pipeline/tools/compose_fake_provider_e2e.py`:
+  - Runs inside the API container.
+  - Seeds a real browser-like session with CSRF.
+  - Uploads a generated WAV through `POST /uploads/direct`.
+  - Creates a run, polls to `succeeded`, checks persisted events, checks JSON
+    and Markdown artifact downloads, checks DB document chunks, checks object
+    store outputs, and verifies temp run object cleanup.
+- Added migration
+  `src/urdu_pipeline/infrastructure/db/migration_files/0004_add_runtime_adapter_fields.sql`
+  for runtime fields:
+  - `users.password_hash`
+  - `runs.description`
+  - `uploads.multipart_upload_id`
+  - `api_tokens.name`
+  - `api_tokens.description`
+- Expanded `PostgresMetadataStore` for runtime API/processor needs:
+  - username lookup, user updates, list users;
+  - service identity lookup/update;
+  - sessions and user bearer token persistence including token
+    name/description;
+  - upload/run/job updates and processor job completion;
+  - run artifact listing and artifact markdown metadata through artifact
+    manifest JSON.
+- Made local setup seeding repeatable where needed:
+  - `admin-create-user` refreshes an existing username's password hash/status.
+  - `seed-service-identity` returns an existing service identity by name.
+- Updated `Dockerfile.api` and `docker-compose.yml`:
+  - API now starts `urdu_pipeline.api.runtime:create_runtime_app`.
+  - Processor now runs the real processor command instead of `--dry-run`.
+- Updated `Makefile`:
+  - `compose-test` now starts the stack, runs migrations/seeding/bucket setup,
+    checks API health, and runs the fake-provider E2E smoke module.
+  - Added `compose-fake-provider-e2e`.
+- Updated `GET /runs/{run_id}/events` to return persisted stage events for
+  stores that implement `list_stage_events`, while preserving empty responses
+  for simpler test stores.
+- Updated `docs/local_api_workflow.md` to remove stale limitations and describe
+  the completed compose fake-provider E2E path.
+
+Verification:
+
+- Red targeted test before implementation:
+  `.venv/bin/python -m pytest tests/unit/test_runtime_app_state.py tests/unit/test_durable_artifact_repository.py tests/unit/test_processor_cli_runtime.py tests/unit/test_compose_fake_provider_e2e.py tests/unit/test_postgres_metadata_store.py::test_postgres_metadata_store_supports_runtime_auth_and_lifecycle_updates tests/unit/test_migrations.py::test_load_migrations_includes_runtime_adapter_fields -q`
+  failed with expected missing runtime/artifact/processor/compose/migration/Postgres
+  contract failures.
+- Targeted green test:
+  `.venv/bin/python -m pytest tests/unit/test_runtime_app_state.py tests/unit/test_durable_artifact_repository.py tests/unit/test_processor_cli_runtime.py tests/unit/test_compose_fake_provider_e2e.py tests/unit/test_postgres_metadata_store.py::test_postgres_metadata_store_supports_runtime_auth_and_lifecycle_updates tests/unit/test_migrations.py::test_load_migrations_includes_runtime_adapter_fields -q`
+  passed (`10 passed`).
+- Affected broad subset:
+  `.venv/bin/python -m pytest tests/unit/test_compose_services.py tests/unit/test_container_packaging.py tests/integration_safe/test_makefile.py tests/unit/test_migrations.py tests/unit/test_postgres_metadata_store.py tests/unit/test_auth_routes.py tests/unit/test_token_routes.py tests/unit/test_run_routes.py tests/unit/test_artifact_routes.py tests/unit/test_upload_routes.py tests/unit/test_service_auth.py -q`
+  passed (`216 passed`).
+- Full local unit + safe integration suite:
+  `.venv/bin/python -m pytest tests/unit tests/integration_safe -q`
+  passed (`825 passed, 3 skipped`).
+- Compose config:
+  `docker compose --env-file .env.local.example config` passed.
+- Compose proxy config:
+  `docker compose --env-file .env.local.example --profile proxy config` passed.
+- Makefile dry-runs:
+  `make --no-print-directory -n compose-test` passed.
+  `make --no-print-directory -n compose-fake-provider-e2e` passed.
+- `git diff --check` passed.
+- Real compose E2E attempt:
+  `make --no-print-directory compose-test` failed because Docker/Colima daemon
+  was not reachable at
+  `unix:///Users/madeel/.colima/default/docker.sock`.
+
+Why it was needed:
+
+- Local Compose now exercises the real API/processor/database/object-store/queue
+  topology instead of only checking health/readiness placeholders.
+- The fake-provider E2E validates the user-facing API path through login, CSRF,
+  upload, run creation, processor completion, events, artifacts, object store
+  output, DB document chunks, no private response fields, and temp cleanup.
+
+Needed for provider switch only?
+
+- No. This is backend API/processor local parity infrastructure.
 
 ## Later Completed Steps And Remaining Plan Status
 
@@ -2190,19 +2319,20 @@ Status:
 - Complete through Step 5.3.2.
 - No remaining Stage 5 work in the original stepwise plan.
 
-## Remaining Stage 6: Full Local Parity Stack
+## Stage 6: Full Local Parity Stack
 
 Purpose:
 
 Make Docker Compose behave like the target backend stack.
 
-Remaining phases:
+Status:
 
-- compose fake-provider E2E test
+- Complete through Step 6.2.3.
+- No remaining Stage 6 work in the original stepwise plan.
 
 Why needed:
 
-- Required for local production-like testing and onboarding.
+- Provides local production-like testing and onboarding.
 
 Needed for provider switch?
 
@@ -2430,14 +2560,14 @@ Give the next AI these files first:
 Tell the next AI explicitly:
 
 - Current state: all local unit and safe integration tests pass
-  (`815 passed, 3 skipped`).
-- Stage 4 COMPLETE. Stage 5 COMPLETE. Stage 6 Steps 6.1.1, 6.1.2, 6.2.1, and 6.2.2 COMPLETE.
+  (`825 passed, 3 skipped`).
+- Stage 4 COMPLETE. Stage 5 COMPLETE. Stage 6 COMPLETE through Step 6.2.3.
 - **Deployment target: AWS Lightsail** (decided 2026-06-07). Cloudflare is no
   longer the target. The architecture remains cloud-agnostic; only Stage 8
   content and Stage 9 provisioning changed in the plan. No code changes needed
   — all completed work was already cloud-agnostic.
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 6.2.3: Add Compose Fake-Provider E2E Test.
+- Next step is Stage 7 Step 7.1.1: Harden Structured Logging And Redaction.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
@@ -2446,10 +2576,9 @@ Tell the next AI explicitly:
 - Use `.venv/bin/python -m pytest` (not bare `pytest`) to run tests.
 - Docker build/start smoke for Stage 6.1 still needs to be rerun once the local
   Docker/Colima daemon is started.
-- Real `make compose-test` for Step 6.2.1 also needs to be rerun once the local
-  Docker/Colima daemon is started.
-- The processor compose service currently validates `urdu-pipeline process
-  --dry-run` and stays alive; the real long-running CLI loop is not wired yet.
+- Real `make compose-test` for Step 6.2.3 needs to be rerun once the local
+  Docker/Colima daemon is started; the target is now wired to the fake-provider
+  E2E smoke.
 
 ## Suggested Next Decision
 
@@ -2475,15 +2604,17 @@ Track B: continue backend conversion (currently active)
   and provider config).
 - **Stage 6 Step 6.2.2 is COMPLETE** (local API workflow documentation and
   documentation coverage tests).
+- **Stage 6 Step 6.2.3 is COMPLETE** (runtime API adapter wiring, real
+  processor loop, durable artifact repository, and compose fake-provider E2E
+  smoke target).
 - **Deployment target changed to AWS Lightsail** (2026-06-07).
   - Stage 8 has been rewritten as "AWS Production Adapter Verification"
     (S3, RDS, Redis/SQS, Secrets Manager adapters).
   - Stage 9 provisioning updated for AWS resources.
   - Stage 8 (Cloudflare spike) is fully replaced — no work to carry forward.
   - Nothing in Stages 1–5 needs to change.
-- Next step: Step 6.2.3 — Add Compose Fake-Provider E2E Test.
-- Then hardening (Stage 7), AWS adapter
-  verification (Stage 8), production deploy (Stage 9).
+- Next step: Stage 7 Step 7.1.1 — Harden Structured Logging And Redaction.
+- Then AWS adapter verification (Stage 8), production deploy (Stage 9).
 
 Track C: stabilize and commit current work
 

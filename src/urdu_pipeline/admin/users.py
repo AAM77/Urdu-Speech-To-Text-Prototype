@@ -84,6 +84,17 @@ def admin_create_user(
         status=UserStatus.ACTIVE,
         password_hash=hasher.hash_secret(password),
     )
+    get_by_username = getattr(store, "get_user_by_username", None)
+    if callable(get_by_username):
+        existing = get_by_username(record.username)
+        if existing is not None:
+            updated = replace(
+                existing,
+                status=UserStatus.ACTIVE,
+                password_hash=record.password_hash,
+            )
+            store.update_user(updated)
+            return updated
     store.create_user(record)
     return record
 

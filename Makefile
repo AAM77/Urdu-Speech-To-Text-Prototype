@@ -39,7 +39,7 @@ PAID_FLAG = $(if $(filter 1 true TRUE yes YES y Y,$(CONFIRM_PAID_RUN)),--confirm
 CHUNK_LENGTH_FLAG = $(if $(strip $(CHUNK_LENGTH_SECONDS)),--chunk-length-seconds $(CHUNK_LENGTH_SECONDS),)
 OVERLAP_FLAG = $(if $(strip $(OVERLAP_SECONDS)),--overlap-seconds $(OVERLAP_SECONDS),)
 
-.PHONY: help latest-run chunk transcribe reconcile translate article to-transcribe to-reconcile to-translate to-article migrate-db api-dev processor-dev compose-up compose-down compose-test compose-setup compose-migrate compose-seed-user compose-seed-service-identity compose-seed-provider-config compose-seed-bucket
+.PHONY: help latest-run chunk transcribe reconcile translate article to-transcribe to-reconcile to-translate to-article migrate-db api-dev processor-dev compose-up compose-down compose-test compose-fake-provider-e2e compose-setup compose-migrate compose-seed-user compose-seed-service-identity compose-seed-provider-config compose-seed-bucket
 
 REQUIRE_AUDIO = if [[ -z "$(AUDIO)" ]]; then echo "AUDIO is required. Example: make $@ AUDIO='inputs/example.mp3'"; exit 1; fi
 RESOLVE_RUN_DIR = run_dir="$(RUN_DIR)"; if [[ -z "$$run_dir" ]]; then run_dir="$$(ls -td "$(RUNS_DIR)"/* 2>/dev/null | head -n1 || true)"; fi; if [[ -z "$$run_dir" ]]; then echo "No run directory found under $(RUNS_DIR). Pass RUN_DIR=... or create one with: make chunk AUDIO='inputs/example.mp3'"; exit 1; fi; echo "Using run directory: $$run_dir"
@@ -98,9 +98,22 @@ compose-test:
 	set -euo pipefail; \
 	$(COMPOSE_CMD) config >/dev/null; \
 	$(COMPOSE_CMD) up --build -d --wait; \
+	$(CLI) migrate-db --database-url "$(LOCAL_DATABASE_URL)"; \
+	OBJECT_STORE_ACCESS_KEY="$(OBJECT_STORE_ACCESS_KEY)" \
+	OBJECT_STORE_SECRET_KEY="$(OBJECT_STORE_SECRET_KEY)" \
+	AWS_ACCESS_KEY_ID="$(OBJECT_STORE_ACCESS_KEY)" \
+	AWS_SECRET_ACCESS_KEY="$(OBJECT_STORE_SECRET_KEY)" \
+	$(CLI) seed-bucket --bucket "$(OBJECT_STORE_BUCKET)" --endpoint-url "$(LOCAL_OBJECT_STORE_ENDPOINT_URL)" --region "$(OBJECT_STORE_REGION)"; \
+	$(CLI) admin-create-user --username "$(LOCAL_USERNAME)" --password "$(LOCAL_PASSWORD)" --database-url "$(LOCAL_DATABASE_URL)"; \
+	$(CLI) seed-service-identity --name "$(SERVICE_IDENTITY_NAME)" --database-url "$(LOCAL_DATABASE_URL)"; \
+	$(CLI) seed-provider-config --provider-name "$(PROVIDER_NAME)" --database-url "$(LOCAL_DATABASE_URL)"; \
 	$(COMPOSE_CMD) ps; \
 	$(COMPOSE_CMD) exec -T api python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"; \
-	$(COMPOSE_CMD) exec -T processor test -f /tmp/processor-ready
+	printf '%s\n' 'compose-fake-provider-e2e'; \
+	$(COMPOSE_CMD) exec -T api python -m urdu_pipeline.tools.compose_fake_provider_e2e
+
+compose-fake-provider-e2e:
+	set -euo pipefail; $(COMPOSE_CMD) exec -T api python -m urdu_pipeline.tools.compose_fake_provider_e2e
 
 compose-setup:
 	set -euo pipefail; \

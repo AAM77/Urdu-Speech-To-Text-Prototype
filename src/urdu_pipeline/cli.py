@@ -40,6 +40,7 @@ from urdu_pipeline.admin.users import (
 )
 from urdu_pipeline.infrastructure.db.migrations import connect_postgres, run_migrations
 from urdu_pipeline.infrastructure.db.metadata import PostgresMetadataStore
+from urdu_pipeline.processor.runtime import run_processor
 from urdu_pipeline.stages.article_generator import run_article_stage
 from urdu_pipeline.stages.chunker import (
     probe_audio_duration_seconds,
@@ -657,6 +658,11 @@ def process_cmd(
         "--dry-run",
         help="Validate configuration and exit without starting the processing loop.",
     ),
+    once: bool = typer.Option(
+        False,
+        "--once",
+        help="Claim at most one job and exit after that processing attempt.",
+    ),
 ) -> None:
     """Run the background job processor.
 
@@ -680,10 +686,12 @@ def process_cmd(
         )
         raise typer.Exit(code=0)
 
-    console.print(
-        f"[yellow]Processor starting...[/] api_url={api_url}"
-        "\nJob lifecycle loop not yet implemented (Stage 5.1.2+)."
+    processed = run_processor(
+        service_token=service_token,
+        api_url=api_url,
+        once=once,
     )
+    console.print(f"[green]Processor stopped.[/] processed_jobs={processed}")
     raise typer.Exit(code=0)
 
 

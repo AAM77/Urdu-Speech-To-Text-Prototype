@@ -70,6 +70,11 @@ def seed_service_identity(
     """Create a new active service identity record in the metadata store."""
     if not name or not name.strip():
         raise ValueError("name must be a non-empty string.")
+    get_by_name = getattr(store, "get_service_identity_by_name", None)
+    if callable(get_by_name):
+        existing = get_by_name(name.strip())
+        if existing is not None:
+            return existing
     record = ServiceIdentityRecord(
         service_identity_id=ServiceIdentityId.new(),
         name=name.strip(),

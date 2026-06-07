@@ -142,6 +142,19 @@ def test_load_migrations_includes_workflow_metadata_tables():
     )
 
 
+def test_load_migrations_includes_runtime_adapter_fields():
+    migrations = {migration.version: migration for migration in load_migrations()}
+
+    assert "0004" in migrations
+    assert migrations["0004"].name == "add_runtime_adapter_fields"
+    sql = _normalized_migration_sql("0004")
+    assert "alter table users add column if not exists password_hash text" in sql
+    assert "alter table runs add column if not exists description text" in sql
+    assert "alter table uploads add column if not exists multipart_upload_id text" in sql
+    assert "alter table api_tokens add column if not exists name text" in sql
+    assert "alter table api_tokens add column if not exists description text" in sql
+
+
 def test_workflow_metadata_migration_creates_required_tables():
     sql = _normalized_migration_sql("0003")
 

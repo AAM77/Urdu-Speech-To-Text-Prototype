@@ -9,7 +9,7 @@ services:
     init: true
     command:
       - uvicorn
-      - urdu_pipeline.api.app:create_app
+      - urdu_pipeline.api.runtime:create_runtime_app
       - --factory
       - --host
       - 0.0.0.0
@@ -62,9 +62,8 @@ services:
       - sh
       - -c
       - |
-        urdu-pipeline process --api-url http://api:8000 --dry-run
         touch /tmp/processor-ready
-        exec python -c "import time; time.sleep(31536000)"
+        exec urdu-pipeline process --api-url http://api:8000
     environment:
       PIPELINE_PROVIDER_MODE: ${PIPELINE_PROVIDER_MODE:-fake}
       OUTPUT_ROOT: ${OUTPUT_ROOT:-/app/runs}

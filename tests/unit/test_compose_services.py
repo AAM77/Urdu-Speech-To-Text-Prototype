@@ -113,7 +113,7 @@ def test_api_service_builds_from_api_dockerfile_and_uses_real_health_route():
     assert api["image"] == "urdu-pipeline-api:local"
     assert "http.server" not in _command_text(api)
     assert "uvicorn" in _command_text(api)
-    assert "urdu_pipeline.api.app:create_app" in _command_text(api)
+    assert "urdu_pipeline.api.runtime:create_runtime_app" in _command_text(api)
 
     healthcheck = _healthcheck_text(api)
     assert "127.0.0.1:8000/health" in healthcheck
@@ -144,7 +144,7 @@ def test_processor_service_builds_from_processor_dockerfile_and_waits_for_api():
     command = _command_text(processor)
     assert "urdu-pipeline process" in command
     assert "--api-url http://api:8000" in command
-    assert "--dry-run" in command
+    assert "--dry-run" not in command
     assert "processor-ready" in command
     assert "http.server" not in command
 

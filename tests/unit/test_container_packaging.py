@@ -28,7 +28,7 @@ def test_api_dockerfile_builds_api_runtime_and_starts_uvicorn_factory():
     _assert_installs_extra(text, "api")
     assert "EXPOSE 8000" in text
     assert "uvicorn" in text
-    assert "urdu_pipeline.api.app:create_app" in text
+    assert "urdu_pipeline.api.runtime:create_runtime_app" in text
     assert "--factory" in text
     assert "--host" in text
     assert "0.0.0.0" in text

@@ -256,6 +256,7 @@ class InMemoryMetadataStore:
         self._runs: dict[RunId, RunRecord] = {}
         self._jobs: dict[JobId, JobRecord] = {}
         self._artifacts: dict[ArtifactId, ArtifactRecord] = {}
+        self._artifact_document_chunks: dict[tuple[ArtifactId, int], object] = {}
 
     def create_user(self, record: UserRecord) -> None:
         self._users[record.user_id] = record
@@ -399,6 +400,21 @@ class InMemoryMetadataStore:
         self._require_user(record.user_id)
         self._require_run_owner(user_id=record.user_id, run_id=record.run_id)
         self._artifacts[record.artifact_id] = record
+
+    def put_artifact_document_chunk(self, record: object) -> None:
+        artifact_id = getattr(record, "artifact_id")
+        chunk_index = int(getattr(record, "chunk_index"))
+        self._artifact_document_chunks[(artifact_id, chunk_index)] = record
+
+    def list_artifact_document_chunks(self, *, artifact_id: ArtifactId) -> Sequence[object]:
+        return [
+            record
+            for (stored_artifact_id, _chunk_index), record in sorted(
+                self._artifact_document_chunks.items(),
+                key=lambda item: item[0][1],
+            )
+            if stored_artifact_id == artifact_id
+        ]
 
     def get_artifact(
         self,
