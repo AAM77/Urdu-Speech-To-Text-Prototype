@@ -56,15 +56,15 @@ Completed through:
 - Stage 1
 - Stage 2
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
-- Stage 4 through Step 4.3.3
+- Stage 4 through Step 4.3.4
 
 Next step in the original plan:
 
-- Step 4.3.4: Add Artifact Routes
+- Step 4.3.5: Generate And Review OpenAPI Schema
 
 Most recent verification:
 
-- Combined unit + safe integration: `586 passed, 3 skipped`
+- Combined unit + safe integration: `615 passed, 3 skipped`
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -1149,6 +1149,54 @@ Provider-switch relevance:
 
 - Not required for CLI provider switching.
 
+### Step 4.3.4: Add Artifact Routes
+
+What was done (strict TDD — tests written and confirmed failing before implementation):
+
+- Extended `ArtifactRecord` in `src/urdu_pipeline/application/ports/services.py`:
+  - Added `has_markdown: bool = False` — whether a Markdown version of the artifact exists.
+- Added `list_run_artifacts(*, user_id, run_id) -> Sequence[ArtifactRecord]` to `MetadataStore`.
+- Implemented `list_run_artifacts` in `InMemoryMetadataStore`: verifies run ownership before
+  listing, returns artifacts sorted by `(created_at, artifact_id)`.
+- Created `src/urdu_pipeline/api/routes/artifacts.py` with two FastAPI routers:
+  - `runs_router` (prefix `/runs`):
+    - `GET /runs/{run_id}/artifacts` — ownership-checked via `get_run`; returns
+      `ArtifactListResponse(artifacts: [ArtifactSummary])` with no object keys or user_id.
+  - `artifacts_router` (prefix `/artifacts`):
+    - `GET /artifacts/{artifact_id}` — ownership-checked via `get_artifact`; returns
+      `ArtifactSummary`. Returns 404 for unknown/other-user artifacts.
+    - `GET /artifacts/{artifact_id}/download?format=json|markdown` — ownership-checked;
+      derives object key as `artifacts/{artifact_id}.json` or `artifacts/{artifact_id}.md`;
+      calls `ObjectStore.create_signed_download_url`; returns `ArtifactDownloadResponse`
+      (artifact_id, download_url, expires_at, format). Returns 404 when
+      `format=markdown` but `has_markdown=False`.
+- Wired both routers into `src/urdu_pipeline/api/app.py`:
+  - `artifact_runs_router` is registered BEFORE `runs_router` so the
+    `/runs/{run_id}/artifacts` literal path is resolved before the generic `/{run_id}` handler.
+  - `artifacts_router` is registered separately.
+- Wrote `tests/unit/test_artifact_routes.py` (29 tests) BEFORE implementation:
+  - Confirmed all 29 failed at start (404, routes absent).
+  - Artifacts are seeded directly into both the metadata store and object store in tests,
+    simulating what the Stage 5 processor would produce.
+  - List: auth, empty list, populated list, 404 for unknown/other-user run, no key leakage.
+  - Get: auth, 200 metadata, 404 for unknown/other-user, no key or user_id in response.
+  - Download: auth, JSON/markdown URLs, expires_at in future, 404 for unknown/other-user,
+    404 for markdown when has_markdown=False, 422 for invalid format, no object key in response.
+- Test count: 615 passed, 3 skipped.
+
+Why it was needed:
+
+- Artifacts are the final output of the pipeline; without read and download routes, callers
+  have no way to retrieve processed transcripts, translations, or articles.
+- Signed URLs keep artifact content out of the API response body, reducing latency and
+  preventing the API server from becoming a bandwidth bottleneck.
+- The `has_markdown` flag enables the API to guard against requests for non-existent Markdown
+  versions, returning a clear 404 rather than letting the object-store request fail silently.
+
+Provider-switch relevance:
+
+- Not required for CLI provider switching.
+
 ### Step 4.3.3: Add Run Routes
 
 What was done (strict TDD — tests written and confirmed failing before implementation):
@@ -1559,9 +1607,9 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- Current state: all unit and safe integration tests pass (586 passed, 3 skipped).
+- Current state: all unit and safe integration tests pass (615 passed, 3 skipped).
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 4.3.4: Add Artifact Routes.
+- Next step is Step 4.3.5: Generate And Review OpenAPI Schema.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
@@ -1582,8 +1630,7 @@ Track A: switch AI provider now
 
 Track B: continue backend conversion (currently active)
 
-- Next step: Step 4.3.4 — Add Artifact Routes.
-- Then OpenAPI review (4.3.5).
+- Next step: Step 4.3.5 — Generate And Review OpenAPI Schema.
 - Then processor (Stage 5) and local parity stack (Stage 6).
 
 Track C: stabilize and commit current work

@@ -91,6 +91,7 @@ class ArtifactRecord:
     artifact_id: ArtifactId
     stage: ArtifactStage
     artifact_type: ArtifactType
+    has_markdown: bool = False
     created_at: datetime = field(default_factory=_utcnow)
 
 
@@ -281,6 +282,13 @@ class MetadataStore(Protocol):
         user_id: UserId,
         artifact_id: ArtifactId,
     ) -> ArtifactRecord | None: ...
+
+    def list_run_artifacts(
+        self,
+        *,
+        user_id: UserId,
+        run_id: RunId,
+    ) -> Sequence[ArtifactRecord]: ...
 
 
 @runtime_checkable

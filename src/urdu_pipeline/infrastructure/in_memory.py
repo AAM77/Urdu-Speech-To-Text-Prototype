@@ -402,6 +402,20 @@ class InMemoryMetadataStore:
             return None
         return record
 
+    def list_run_artifacts(
+        self,
+        *,
+        user_id: UserId,
+        run_id: RunId,
+    ) -> Sequence[ArtifactRecord]:
+        run = self._runs.get(run_id)
+        if run is None or run.user_id != user_id:
+            return []
+        return sorted(
+            (r for r in self._artifacts.values() if r.user_id == user_id and r.run_id == run_id),
+            key=lambda r: (r.created_at, str(r.artifact_id)),
+        )
+
     def _require_user(self, user_id: UserId) -> None:
         if user_id not in self._users:
             raise ValueError(f"user does not exist: {user_id}")
