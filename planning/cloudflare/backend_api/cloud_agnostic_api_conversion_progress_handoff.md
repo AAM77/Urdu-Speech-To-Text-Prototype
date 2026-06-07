@@ -56,15 +56,15 @@ Completed through:
 - Stage 1
 - Stage 2
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
-- Stage 4 (complete) + Stage 5 through Step 5.2.1
+- Stage 4 (complete) + Stage 5 through Step 5.2.2
 
 Next step in the original plan:
 
-- Step 5.2.2: Run Chunker And Persist Chunk Manifest
+- Step 5.2.3: Run Transcription And Reconciliation
 
 Most recent verification:
 
-- Combined unit + safe integration: `726 passed, 3 skipped`
+- Combined unit + safe integration: `740 passed, 3 skipped`
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -1149,6 +1149,64 @@ Provider-switch relevance:
 
 - Not required for CLI provider switching.
 
+### Step 5.2.2: Run Chunker And Persist Chunk Manifest
+
+What was done:
+
+- Wrote `tests/unit/test_processor_chunker.py` (14 tests) before any
+  implementation, covering all paths under TDD. Tests confirmed failing first.
+
+- Created `src/urdu_pipeline/processor/chunker.py` with:
+  - `run_chunker_stage(job_record, audio_path, *, workspace, object_store,
+    artifact_repo, chunker_fn, key_builder=None) -> ArtifactReference`
+    - Calls `chunker_fn(audio_path)` — a `Callable[[Path], ChunkManifestArtifact]`
+      injectable dependency; production code wraps `ChunkerStage.run`, tests use
+      a fake that creates real chunk files without invoking ffmpeg.
+    - For each chunk, uploads the chunk file at `workspace.root / chunk.file_path`
+      to object store under the opaque key from `ObjectKeyBuilder.run_chunk`:
+      `tmp/users/{user_id}/runs/{run_id}/chunks/{chunk_id}.{audio_ext}`.
+    - Calls `artifact_repo.save_artifact(stage=CHUNKER, artifact_type=CHUNK_MANIFEST,
+      payload=manifest.model_dump())` to persist the manifest JSON.
+    - Returns the `ArtifactReference` from the repository.
+    - Any exception from `chunker_fn` (including `FatalJobError`) propagates
+      unchanged so `claim_and_run` routes it correctly.
+
+- Tests cover:
+  - Returns `ArtifactReference` with `stage=CHUNKER`, `artifact_type=CHUNK_MANIFEST`.
+  - `artifact_repo.save_artifact` called once with correct user_id/run_id.
+  - Manifest payload contains the chunk list (verified for 3 chunks).
+  - All chunk files are uploaded to object store (verified for 3 chunks).
+  - Uploaded chunk content matches the file bytes.
+  - Chunk keys start with `tmp/` (scoped under transient namespace).
+  - Chunk keys include the run_id (user-scoped isolation).
+  - Workspace temp-dir path is absent from chunk keys.
+  - Original user filename is absent from chunk keys.
+  - Zero chunks: no uploads occur but manifest is still saved.
+  - `FatalJobError` from `chunker_fn` propagates unchanged.
+  - Unexpected `RuntimeError` from `chunker_fn` propagates unchanged.
+
+- One test assertion was refined during red→green: the original assertion
+  `"chunk_0001.mp3" not in key` was wrong — the internally-generated chunk_id
+  (`chunk_0001`) legitimately appears in the opaque key. Split into two tests:
+  workspace-path-absent and original-user-filename-absent.
+
+- Test count: 740 passed, 3 skipped.
+
+Why it was needed:
+
+- The chunker produces multiple local files (one per audio segment) that need
+  to be in object storage before the transcription stage can read them on any
+  worker node.
+- Uploading under `tmp/users/{user_id}/runs/{run_id}/chunks/` scopes all
+  transient objects so they can be cleaned up as a prefix after the run.
+- Persisting the `ChunkManifestArtifact` via `ArtifactRepository` (not raw
+  metadata store) keeps the artifact ownership and retrieval consistent with
+  the API artifact routes from Stage 4.
+
+Provider-switch relevance:
+
+- Not required for CLI provider switching.
+
 ### Step 5.2.1: Materialize Workspace And Validate Audio
 
 What was done:
@@ -1825,14 +1883,14 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- Current state: all unit and safe integration tests pass (726 passed, 3 skipped).
-- Stage 4 COMPLETE. Stage 5 in progress (Steps 5.1.1, 5.1.2, and 5.2.1 done).
+- Current state: all unit and safe integration tests pass (740 passed, 3 skipped).
+- Stage 4 COMPLETE. Stage 5 in progress (Steps 5.1.1, 5.1.2, 5.2.1, and 5.2.2 done).
 - **Deployment target: AWS Lightsail** (decided 2026-06-07). Cloudflare is no
   longer the target. The architecture remains cloud-agnostic; only Stage 8
   content and Stage 9 provisioning changed in the plan. No code changes needed
   — all completed work was already cloud-agnostic.
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 5.2.2: Run Chunker And Persist Chunk Manifest.
+- Next step is Step 5.2.3: Run Transcription And Reconciliation.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
@@ -1854,14 +1912,14 @@ Track A: switch AI provider now
 Track B: continue backend conversion (currently active)
 
 - Stage 4 is COMPLETE. Stage 5 Phase 5.1 is COMPLETE (5.1.1 + 5.1.2 done).
-  Step 5.2.1 is also COMPLETE.
+  Steps 5.2.1 and 5.2.2 are also COMPLETE.
 - **Deployment target changed to AWS Lightsail** (2026-06-07).
   - Stage 8 has been rewritten as "AWS Production Adapter Verification"
     (S3, RDS, Redis/SQS, Secrets Manager adapters).
   - Stage 9 provisioning updated for AWS resources.
   - Stage 8 (Cloudflare spike) is fully replaced — no work to carry forward.
-  - Nothing in Stages 1–5.2.1 needs to change.
-- Next step: Step 5.2.2 — Run Chunker And Persist Chunk Manifest.
+  - Nothing in Stages 1–5.2.2 needs to change.
+- Next step: Step 5.2.3 — Run Transcription And Reconciliation.
 - Then pipeline integration (5.2.2–5.2.4), failure handling (5.3.x), local
   parity stack (Stage 6), hardening (Stage 7), AWS adapter verification
   (Stage 8), production deploy (Stage 9).
