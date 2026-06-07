@@ -338,6 +338,8 @@ Notes:
 The backend conversion also includes a local Docker Compose parity stack for
 API, processor, PostgreSQL, MinIO, Redis, and an optional Nginx proxy. See
 `docs/local_api_workflow.md` for setup commands and the API route workflow.
+See `docs/operator_guide.md` for user administration, token revocation,
+cleanup, backup, restore, smoke tests, and cost monitoring.
 
 ### 5c. Streamlit UI
 

@@ -4,6 +4,10 @@ This document covers the local API-backed workflow for the backend conversion
 track. The local default is fake-provider mode, so setup and route exploration
 should not require a paid model call.
 
+For operational procedures such as user administration, token revocation,
+cleanup, backup, restore, smoke tests, and cost monitoring, see
+`docs/operator_guide.md`.
+
 Current status:
 
 - `docker compose` validates the API, processor, PostgreSQL, MinIO, Redis, and

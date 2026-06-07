@@ -1,6 +1,6 @@
 # Cloud-Agnostic API Conversion Progress Handoff
 
-Last updated: 2026-06-07 (session 13)
+Last updated: 2026-06-07 (session 14)
 
 This document summarizes what has been completed from
 `cloud_agnostic_api_conversion_stepwise_commit_plan.md`, why each part exists,
@@ -20,7 +20,7 @@ The stepwise plan is for a full backend conversion:
 - separate processor runtime
 - local Docker parity
 - operational hardening
-- Cloudflare/R2 adapter spike
+- AWS production adapter verification
 - production deployment
 
 That is much broader than "switch to a different AI provider."
@@ -62,13 +62,15 @@ Completed through:
 - Stage 7 Step 7.1.1 (complete)
 - Stage 7 Step 7.1.2 (complete)
 - Stage 7 Step 7.1.3 (complete)
+- Stage 7 Step 7.2.1 (complete)
 
 Next step in the original plan:
 
-- Stage 7: Step 7.2.1 — Add Backup, Restore, And Operator Docs
+- Stage 8: Step 8.1.1 — Verify S3 ObjectStore Adapter Against AWS S3
 
 Most recent verification:
 
+- Step 7.2.1 docs-only verification: `git diff --check` passed
 - Combined unit + safe integration: `847 passed, 3 skipped`
 - Full unit suite: `823 passed`
 - Safe integration suite: `24 passed, 3 skipped`
@@ -2567,25 +2569,63 @@ Provider-switch relevance:
 - The object-store, queue, metadata, and cleanup hardening are backend
   production concerns.
 
-## Remaining Stage 8: Cloudflare Adapter Spike
+### Step 7.2.1: Add Backup, Restore, And Operator Docs
+
+What was done:
+
+- Added `docs/operator_guide.md` covering:
+  - user creation, listing, password reset, and disablement
+  - service identity creation and revocation
+  - bearer token listing and revocation through the API
+  - automatic retry behavior and safe recovery guidance
+  - run cancellation behavior and its cooperative processor semantics
+  - cleanup task responsibilities, retry behavior, and current scheduler
+    integration gap
+  - PostgreSQL, object-store, and Redis/Valkey backup responsibilities
+  - restore order and post-restore checks
+  - local and optional live smoke tests
+  - real-provider cost monitoring guidance
+- Linked the operator guide from `docs/local_api_workflow.md`.
+- Linked the operator guide from `README.md`.
+- No behavior tests were added because the step explicitly marks tests as not
+  applicable for behavior and the user clarified not to add unnecessary tests
+  for such steps.
+
+Why it was needed:
+
+- Stage 7 hardening added the mechanics for redaction, cleanup, retry safety,
+  and failure observability; operators also need concrete procedures for using
+  those mechanics safely.
+- Backup and restore must be documented before production adapter verification
+  because the next stage touches real or staging AWS resources.
+- The guide distinguishes implemented CLI/API paths from known gaps, such as
+  the cleanup scheduler not yet having a dedicated CLI/Make target.
+
+Provider-switch relevance:
+
+- Not required for local CLI provider switching.
+- Useful when enabling real-provider mode because it documents token handling,
+  smoke tests, retry/cost behavior, and provider-spend monitoring.
+
+## Remaining Stage 8: AWS Production Adapter Verification
 
 Purpose:
 
-Evaluate Cloudflare-specific deployment options after the local provider-neutral
-backend exists.
+Verify production AWS service behavior after the local provider-neutral backend
+exists.
 
 Remaining phases:
 
-- re-verify Cloudflare limits
-- prototype R2 object store adapter
-- decide external PostgreSQL versus D1
-- prototype Cloudflare Queue adapter if appropriate
-- prototype thin Worker API/proxy if appropriate
+- verify S3 object-store behavior
+- verify PostgreSQL metadata store against managed RDS
+- verify Redis or chosen queue adapter behavior
+- document AWS IAM, networking, and secrets requirements
+- run controlled fake-provider and real-provider smoke checks
 
 Why needed:
 
-- Cloudflare constraints change and must be verified close to deployment.
-- The local ports make this spike lower risk.
+- Production AWS services can differ from local MinIO/PostgreSQL/Redis behavior.
+- The local ports make this verification lower risk.
 
 Needed for provider switch?
 
@@ -2777,9 +2817,12 @@ Tell the next AI explicitly:
 - Stage 7 Step 7.1.1 is complete.
 - Stage 7 Step 7.1.2 is complete.
 - Stage 7 Step 7.1.3 is complete.
-- Next step is Stage 7 Step 7.2.1: Add Backup, Restore, And Operator Docs.
-- IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
-  confirm they fail, then implement to make them pass.
+- Stage 7 Step 7.2.1 is complete.
+- Next step is Stage 8 Step 8.1.1: Verify S3 ObjectStore Adapter Against AWS S3.
+- IMPORTANT: For behavior/code changes, write tests BEFORE implementation
+  (strict TDD), run them to confirm they fail, then implement to make them
+  pass. For docs-only steps that explicitly say tests are not applicable, do
+  not add unnecessary tests.
 - Preserve all prompt-safety and provider-request boundaries.
 - Run targeted tests before full suites.
 - Do not revert unrelated work.
@@ -2833,8 +2876,11 @@ Track B: continue backend conversion (currently active)
   transitions, provider transient/fatal failure classification, partial
   artifact cleanup, redacted retry/dead-letter reasons, and cleanup
   `last_error` observability).
-- Next step: Stage 7 Step 7.2.1 — Add Backup, Restore, And Operator Docs.
-- Then AWS adapter verification (Stage 8), production deploy (Stage 9).
+- **Stage 7 Step 7.2.1 is COMPLETE** (operator guide covering users, token
+  revocation, retry, cancellation, cleanup, backups, restore, smoke tests, and
+  cost monitoring).
+- Next step: Stage 8 Step 8.1.1 — Verify S3 ObjectStore Adapter Against AWS S3.
+- Then continue AWS adapter verification (Stage 8), production deploy (Stage 9).
 
 Track C: stabilize and commit current work
 
