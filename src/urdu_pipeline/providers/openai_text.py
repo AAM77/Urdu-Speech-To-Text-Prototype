@@ -13,6 +13,10 @@ from __future__ import annotations
 from urdu_pipeline.config.settings import get_settings
 from urdu_pipeline.logging_utils import get_logger, safe_log_event
 from urdu_pipeline.providers.base import TextGenerationResult
+from urdu_pipeline.providers.requests import (
+    TextGenerationRequest,
+    coerce_text_generation_request,
+)
 
 _LOGGER = get_logger("providers.openai_text")
 
@@ -37,31 +41,44 @@ class OpenAITextProvider:
 
     def generate(
         self,
-        prompt: str,
-        input_text: str,
-        model_id: str,
+        request: TextGenerationRequest | str | None = None,
+        input_text: str | None = None,
+        model_id: str | None = None,
         max_output_tokens: int | None = None,
+        *,
+        prompt: str | None = None,
     ) -> TextGenerationResult:
-        full_prompt = prompt + "\n\n" + input_text
+        request_obj = coerce_text_generation_request(
+            request,
+            input_text=input_text,
+            model_id=model_id,
+            max_output_tokens=max_output_tokens,
+            prompt=prompt,
+        )
+        full_prompt = request_obj.full_prompt_text()
         safe_log_event(
             _LOGGER,
             "text_generate_start",
-            model=model_id,
-            prompt_chars=len(prompt),
-            input_chars=len(input_text),
+            model=request_obj.model_id,
+            prompt_chars=len(request_obj.instruction_text),
+            input_chars=len(request_obj.source_text),
         )
 
-        text, usage = self._call_responses_or_chat(model_id, full_prompt, max_output_tokens)
+        text, usage = self._call_responses_or_chat(
+            request_obj.model_id,
+            full_prompt,
+            request_obj.max_output_tokens,
+        )
 
         safe_log_event(
             _LOGGER,
             "text_generate_done",
-            model=model_id,
+            model=request_obj.model_id,
             output_chars=len(text or ""),
         )
         return TextGenerationResult(
             text=text or "",
-            model_id=model_id,
+            model_id=request_obj.model_id,
             actual_usage=usage or {},
             provider_metadata={},
         )

@@ -16,6 +16,12 @@ from urdu_pipeline.providers.base import (
     TextGenerationResult,
     TranscriptionResult,
 )
+from urdu_pipeline.providers.requests import (
+    AudioTranscriptionRequest,
+    TextGenerationRequest,
+    coerce_audio_transcription_request,
+    coerce_text_generation_request,
+)
 
 
 def _stable_hash(s: str) -> str:
@@ -46,30 +52,36 @@ class FakeAudioTranscriptionProvider:
 
     def transcribe_chunk(
         self,
-        chunk_path: Path,
-        prompt: str,
-        model_id: str,
+        chunk_path: AudioTranscriptionRequest | Path | str,
+        prompt: str | None = None,
+        model_id: str | None = None,
         language_hint: str | None = None,
     ) -> TranscriptionResult:
+        request = coerce_audio_transcription_request(
+            chunk_path,
+            prompt=prompt,
+            model_id=model_id,
+            language_hint=language_hint,
+        )
         self.call_count += 1
         # `chunk_index` is encoded in the chunk filename (chunk_NNNN).
         try:
-            stem = Path(chunk_path).stem  # e.g. "chunk_0003"
+            stem = Path(request.chunk_path).stem  # e.g. "chunk_0003"
             idx = int(stem.split("_")[-1])
         except Exception:
             idx = self.call_count
-        if language_hint == "en":
+        if request.language_hint == "en":
             text = _FAKE_TRANSCRIPT_TEMPLATE_EN_US.format(chunk_index=idx)
         else:
             text = _FAKE_TRANSCRIPT_TEMPLATE.format(chunk_index=idx)
         return TranscriptionResult(
             text=text,
-            model_id=model_id,
+            model_id=request.model_id,
             duration_seconds=300.0,
             actual_usage={"call_count": self.call_count, "fake": True},
             provider_metadata={
                 "fake": True,
-                "input_hint": _stable_hash(prompt + str(chunk_path)),
+                "input_hint": _stable_hash(request.prompt_text + str(request.chunk_path)),
                 "chunk_index": idx,
             },
         )
@@ -120,16 +132,25 @@ class FakeTextGenerationProvider:
 
     def generate(
         self,
-        prompt: str,
-        input_text: str,
-        model_id: str,
+        request: TextGenerationRequest | str | None = None,
+        input_text: str | None = None,
+        model_id: str | None = None,
         max_output_tokens: int | None = None,
+        *,
+        prompt: str | None = None,
     ) -> TextGenerationResult:
+        request_obj = coerce_text_generation_request(
+            request,
+            input_text=input_text,
+            model_id=model_id,
+            max_output_tokens=max_output_tokens,
+            prompt=prompt,
+        )
         self.call_count += 1
-        self.last_prompt = prompt
-        self.last_input = input_text
+        self.last_prompt = request_obj.instruction_text
+        self.last_input = request_obj.source_text
 
-        prompt_lower = prompt.lower()
+        prompt_lower = request_obj.instruction_text.lower()
         if "reconciliation" in prompt_lower or "merging overlapping" in prompt_lower:
             text = _FAKE_RECONCILE_NOTE
         elif "translating" in prompt_lower or "american english" in prompt_lower and "article" not in prompt_lower:
@@ -137,14 +158,16 @@ class FakeTextGenerationProvider:
         elif "standalone" in prompt_lower or "article" in prompt_lower:
             text = _FAKE_ARTICLE_JSON
         else:
-            text = "[fake-generation]\n" + input_text[:500]
+            text = "[fake-generation]\n" + request_obj.source_text[:500]
 
         return TextGenerationResult(
             text=text,
-            model_id=model_id,
+            model_id=request_obj.model_id,
             actual_usage={"call_count": self.call_count, "fake": True},
             provider_metadata={
                 "fake": True,
-                "input_hint": _stable_hash(prompt + input_text),
+                "input_hint": _stable_hash(
+                    request_obj.instruction_text + request_obj.source_text
+                ),
             },
         )

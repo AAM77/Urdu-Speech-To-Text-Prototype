@@ -6,6 +6,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from urdu_pipeline.providers.requests import (
+    AudioTranscriptionRequest,
+    TextGenerationRequest,
+)
+
 
 @dataclass
 class TranscriptionResult:
@@ -31,9 +36,9 @@ class AudioTranscriptionProvider(Protocol):
 
     def transcribe_chunk(
         self,
-        chunk_path: Path,
-        prompt: str,
-        model_id: str,
+        chunk_path: AudioTranscriptionRequest | Path | str,
+        prompt: str | None = None,
+        model_id: str | None = None,
         language_hint: str | None = None,
     ) -> TranscriptionResult: ...
 
@@ -45,8 +50,10 @@ class TextGenerationProvider(Protocol):
 
     def generate(
         self,
-        prompt: str,
-        input_text: str,
-        model_id: str,
+        request: TextGenerationRequest | str | None = None,
+        input_text: str | None = None,
+        model_id: str | None = None,
         max_output_tokens: int | None = None,
+        *,
+        prompt: str | None = None,
     ) -> TextGenerationResult: ...

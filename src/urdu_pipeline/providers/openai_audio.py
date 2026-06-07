@@ -15,6 +15,10 @@ from pathlib import Path
 from urdu_pipeline.config.settings import get_settings
 from urdu_pipeline.logging_utils import get_logger, safe_log_event
 from urdu_pipeline.providers.base import TranscriptionResult
+from urdu_pipeline.providers.requests import (
+    AudioTranscriptionRequest,
+    coerce_audio_transcription_request,
+)
 
 _LOGGER = get_logger("providers.openai_audio")
 
@@ -40,25 +44,31 @@ class OpenAIAudioProvider:
 
     def transcribe_chunk(
         self,
-        chunk_path: Path,
-        prompt: str,
-        model_id: str,
+        chunk_path: AudioTranscriptionRequest | Path | str,
+        prompt: str | None = None,
+        model_id: str | None = None,
         language_hint: str | None = None,
     ) -> TranscriptionResult:
-        lang = language_hint or "ur"
+        request = coerce_audio_transcription_request(
+            chunk_path,
+            prompt=prompt,
+            model_id=model_id,
+            language_hint=language_hint,
+        )
+        lang = request.language_hint or "ur"
         safe_log_event(
             _LOGGER,
             "transcribe_chunk_start",
-            model=model_id,
-            file=chunk_path.name,
+            model=request.model_id,
+            file=request.chunk_path.name,
             language=lang,
         )
-        with chunk_path.open("rb") as fh:
+        with request.chunk_path.open("rb") as fh:
             # The OpenAI SDK accepts file-like objects for audio.transcriptions.
             response = self._client.audio.transcriptions.create(
-                model=model_id,
+                model=request.model_id,
                 file=fh,
-                prompt=prompt,
+                prompt=request.prompt_text,
                 language=lang,
                 response_format="text",
             )
@@ -70,14 +80,14 @@ class OpenAIAudioProvider:
         safe_log_event(
             _LOGGER,
             "transcribe_chunk_done",
-            model=model_id,
-            file=chunk_path.name,
+            model=request.model_id,
+            file=request.chunk_path.name,
             chars=len(text or ""),
         )
         return TranscriptionResult(
             text=text or "",
-            model_id=model_id,
+            model_id=request.model_id,
             duration_seconds=0.0,
             actual_usage={},
-            provider_metadata={"file": chunk_path.name},
+            provider_metadata={"file": request.chunk_path.name},
         )
