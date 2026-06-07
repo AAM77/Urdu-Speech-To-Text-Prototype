@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import shutil
+import re
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
+from typing import Any, Mapping
 
 from pydantic import BaseModel
 
+from urdu_pipeline.application.ports import CacheEntry, CacheScope
 from urdu_pipeline.artifacts.store import ArtifactStore, RunPaths
+from urdu_pipeline.cache.artifact_cache import ArtifactCache
 from urdu_pipeline.config.settings import Settings
+
+_SAFE_CACHE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
 def _safe_workspace_relative_path(relative_path: str) -> Path:
@@ -44,6 +50,15 @@ def _resolve_workspace_path(root: Path, directory: str, relative_path: str) -> P
     except ValueError as exc:
         raise ValueError("workspace path must stay within the run directory.") from exc
     return candidate
+
+
+def _safe_cache_segment(field: str, value: str) -> str:
+    if not isinstance(value, str) or not _SAFE_CACHE_SEGMENT_RE.fullmatch(value):
+        raise ValueError(
+            f"{field} must be a non-empty cache segment containing only "
+            "letters, numbers, underscores, and hyphens."
+        )
+    return value
 
 
 @dataclass
@@ -103,7 +118,78 @@ class FilesystemArtifactSink:
         return self.store.write_markdown(text, filename)
 
 
+class FilesystemCacheStore:
+    """CacheStore adapter backed by the existing ArtifactCache JSON files."""
+
+    def __init__(
+        self,
+        root: Path | None = None,
+        *,
+        settings: Settings | None = None,
+        cache: ArtifactCache | None = None,
+    ) -> None:
+        if cache is not None and (root is not None or settings is not None):
+            raise ValueError("pass either cache or root/settings, not both.")
+        self._cache = cache or ArtifactCache(root=root, settings=settings)
+
+    @classmethod
+    def from_cache(cls, cache: ArtifactCache) -> "FilesystemCacheStore":
+        return cls(cache=cache)
+
+    def get(self, scope: CacheScope, key: str) -> CacheEntry | None:
+        scope_name, safe_key = self._safe_scope_and_key(scope, key)
+        lookup = self._cache.lookup(self._artifact_cache_key(scope, scope_name, safe_key))
+        if not lookup.hit or lookup.payload is None:
+            return None
+        return CacheEntry(
+            scope=CacheScope(user_id=scope.user_id, name=scope_name),
+            key=safe_key,
+            payload=dict(lookup.payload),
+        )
+
+    def put(
+        self,
+        scope: CacheScope,
+        key: str,
+        payload: Mapping[str, Any],
+    ) -> CacheEntry:
+        scope_name, safe_key = self._safe_scope_and_key(scope, key)
+        entry = CacheEntry(
+            scope=CacheScope(user_id=scope.user_id, name=scope_name),
+            key=safe_key,
+            payload=dict(payload),
+        )
+        self._cache.store(
+            self._artifact_cache_key(scope, scope_name, safe_key),
+            dict(payload),
+        )
+        return entry
+
+    def delete(self, scope: CacheScope, key: str) -> bool:
+        scope_name, safe_key = self._safe_scope_and_key(scope, key)
+        path = self._cache._path_for(self._artifact_cache_key(scope, scope_name, safe_key))
+        if not path.exists():
+            return False
+        path.unlink()
+        return True
+
+    def _safe_scope_and_key(self, scope: CacheScope, key: str) -> tuple[str, str]:
+        return (
+            _safe_cache_segment("scope", scope.name),
+            _safe_cache_segment("cache_key", key),
+        )
+
+    def _artifact_cache_key(
+        self,
+        scope: CacheScope,
+        scope_name: str,
+        key: str,
+    ) -> str:
+        return f"users/{scope.user_id}/{scope_name}/{key}"
+
+
 __all__ = [
     "FilesystemArtifactSink",
+    "FilesystemCacheStore",
     "FilesystemRunWorkspace",
 ]
