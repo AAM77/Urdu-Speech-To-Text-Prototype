@@ -24,6 +24,30 @@
         }
       }
     },
+    "/internal/ping": {
+      "get": {
+        "tags": [
+          "internal"
+        ],
+        "summary": "Internal Ping",
+        "description": "Health-check endpoint for the processor service.\n\nReturns the resolved principal kind and scopes so callers can confirm\nthey authenticated as a service identity with the expected privileges.",
+        "operationId": "internal_ping_internal_ping_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Internal Ping Internal Ping Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/auth/login": {
       "post": {
         "tags": [

@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from urdu_pipeline.api.dependencies import AppState
 from urdu_pipeline.api.routes.auth import router as auth_router
 from urdu_pipeline.api.routes.health import router as health_router
+from urdu_pipeline.api.routes.internal import router as internal_router
 from urdu_pipeline.api.routes.tokens import router as tokens_router
 from urdu_pipeline.api.routes.artifacts import artifacts_router, runs_router as artifact_runs_router
 from urdu_pipeline.api.routes.runs import router as runs_router
@@ -53,6 +54,7 @@ def create_app(
         app.state.app_state = state
 
     app.include_router(health_router)
+    app.include_router(internal_router)
     app.include_router(auth_router)
     app.include_router(tokens_router)
     app.include_router(uploads_router)

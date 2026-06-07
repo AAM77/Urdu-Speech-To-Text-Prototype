@@ -639,6 +639,54 @@ def admin_revoke_service_identity_cmd(
     )
 
 
+@app.command(name="process")
+def process_cmd(
+    service_token: Optional[str] = typer.Option(
+        None,
+        "--service-token",
+        envvar="SERVICE_AUTH_TOKEN",
+        help="Service authentication token (set SERVICE_AUTH_TOKEN env var or pass here).",
+    ),
+    api_url: str = typer.Option(
+        "http://localhost:8000",
+        "--api-url",
+        help="Base URL of the Urdu Pipeline API to communicate with.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Validate configuration and exit without starting the processing loop.",
+    ),
+) -> None:
+    """Run the background job processor.
+
+    The processor claims jobs from the queue, materializes audio from object
+    storage, executes the pipeline stages, and uploads artifacts.
+
+    Requires SERVICE_AUTH_TOKEN to authenticate against the internal API endpoints.
+    Stage 5.1.2+ implements the full job lifecycle loop.
+    """
+    if not service_token:
+        console.print(
+            "[red]Error:[/] SERVICE_AUTH_TOKEN is required. "
+            "Set the --service-token flag or the SERVICE_AUTH_TOKEN environment variable."
+        )
+        raise typer.Exit(code=1)
+
+    if dry_run:
+        console.print(
+            f"[green]Processor configuration valid.[/] "
+            f"api_url={api_url} service_token=<set>"
+        )
+        raise typer.Exit(code=0)
+
+    console.print(
+        f"[yellow]Processor starting...[/] api_url={api_url}"
+        "\nJob lifecycle loop not yet implemented (Stage 5.1.2+)."
+    )
+    raise typer.Exit(code=0)
+
+
 class _Pbkdf2Hasher:
     """Bcrypt hasher used by the admin CLI (delegates to ``BcryptHasher``)."""
 

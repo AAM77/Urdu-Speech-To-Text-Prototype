@@ -56,15 +56,15 @@ Completed through:
 - Stage 1
 - Stage 2
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
-- Stage 4 (all steps complete through 4.3.5)
+- Stage 4 (complete) + Stage 5 through Step 5.1.1
 
 Next step in the original plan:
 
-- Step 5.1.1: Add Processor Command And Service Auth (Stage 5 begins)
+- Step 5.1.2: Implement Claim, Heartbeat, Lease, Retry, Cancel, Dead-Letter
 
 Most recent verification:
 
-- Combined unit + safe integration: `650 passed, 3 skipped`
+- Combined unit + safe integration: `673 passed, 3 skipped`
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -1149,6 +1149,63 @@ Provider-switch relevance:
 
 - Not required for CLI provider switching.
 
+### Step 5.1.1: Add Processor Command And Service Auth
+
+What was done:
+
+- Wrote `tests/unit/test_service_auth.py` (23 tests) before any implementation:
+  - **AppState field**: `service_auth_token` kwarg accepted; defaults to `None`.
+  - **Internal endpoint — happy path**: valid service token → 200, body contains
+    `status=ok`, `principal_kind=service`, and `scopes=["processor"]`.
+  - **Internal endpoint — rejections**: no auth header → 401; wrong token → 401;
+    service auth not configured → 401; empty bearer value → 401; non-Bearer scheme → 401.
+  - **User credentials blocked on internal endpoint**: session cookie only → 401;
+    user bearer token → 401 (user tokens are not the service token).
+  - **Service token blocked on user endpoints**: service token on `GET /runs` → 401;
+    on `POST /uploads/init` → 401; on `POST /runs` → 401; on `GET /runs/{id}/artifacts` → 401.
+    (Service tokens are not stored in the user bearer store, so bearer lookup returns
+    `None` → 401 from `require_principal`.)
+  - **Timing safety**: token with leading space rejected; token with trailing newline rejected
+    (``secrets.compare_digest`` does exact byte comparison).
+  - **Processor CLI command**: `process --help` exits 0; `process` without token exits non-zero;
+    `process --dry-run` with token exits 0 and reports "valid".
+
+- Implementation changes:
+  - `src/urdu_pipeline/api/dependencies.py`:
+    - `AppState` extended with `service_auth_token: str | None = None` and
+      `service_identity_id: ServiceIdentityId = field(default_factory=ServiceIdentityId.new)`.
+    - Added `get_principal_from_service_token` dependency: checks
+      `Authorization: Bearer <X>` against `state.service_auth_token` using
+      ``secrets.compare_digest`` (constant-time).  Returns `AuthPrincipal(kind="service",
+      scopes=frozenset({"processor"}))` on match, `None` otherwise.
+    - Added `require_service_principal` dependency: wraps the above, raises 401.
+  - `src/urdu_pipeline/api/routes/internal.py` *(NEW FILE)*: `GET /internal/ping`
+    returns `{"status": "ok", "principal_kind": ..., "scopes": [...]}` protected
+    by `require_service_principal`.
+  - `src/urdu_pipeline/api/app.py`: `internal_router` included (before public routes).
+  - `src/urdu_pipeline/config/settings.py`: `service_auth_token: str | None` field added.
+  - `src/urdu_pipeline/cli.py`: `process` command added — validates `SERVICE_AUTH_TOKEN`,
+    supports `--dry-run` for config validation, prints placeholder message for the
+    not-yet-implemented job loop (Stage 5.1.2+).
+  - `.env.example`: `SERVICE_AUTH_TOKEN=` entry added with generation instructions.
+
+- Test count: 673 passed, 3 skipped.
+
+Why it was needed:
+
+- The processor runs as a separate process and needs a way to call internal API
+  endpoints without being a user.  A static shared secret (not in the bearer token
+  store) kept in `AppState`/settings is the simplest cloud-neutral mechanism.
+- Constant-time comparison (``secrets.compare_digest``) prevents timing-oracle attacks
+  on the service token.
+- The processor command skeleton (`urdu-pipeline process`) gives operators a clear
+  entry point; `--dry-run` lets deployment scripts validate token config before
+  starting the real loop.
+
+Provider-switch relevance:
+
+- Not required for CLI provider switching.
+
 ### Step 4.3.5: Generate And Review OpenAPI Schema
 
 What was done:
@@ -1644,10 +1701,10 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- Current state: all unit and safe integration tests pass (650 passed, 3 skipped).
-- Stage 4 (all phases and steps) is now COMPLETE.
+- Current state: all unit and safe integration tests pass (673 passed, 3 skipped).
+- Stage 4 COMPLETE. Stage 5 in progress (Step 5.1.1 done).
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 5.1.1: Add Processor Command And Service Auth.
+- Next step is Step 5.1.2: Implement Claim, Heartbeat, Lease, Retry, Cancel, Dead-Letter.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
@@ -1668,9 +1725,9 @@ Track A: switch AI provider now
 
 Track B: continue backend conversion (currently active)
 
-- Stage 4 is now COMPLETE. All API routes are implemented and tested.
-- Next step: Step 5.1.1 — Add Processor Command And Service Auth (Stage 5 begins).
-- Then job lifecycle (5.1.2), pipeline integration (5.2.x), local parity stack (Stage 6).
+- Stage 4 is COMPLETE. Stage 5 is underway (Step 5.1.1 done).
+- Next step: Step 5.1.2 — Implement Claim, Heartbeat, Lease, Retry, Cancel, Dead-Letter.
+- Then pipeline integration (5.2.x), local parity stack (Stage 6).
 
 Track C: stabilize and commit current work
 

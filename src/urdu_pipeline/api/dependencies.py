@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass, field
 from typing import Annotated
 
@@ -19,6 +20,7 @@ from urdu_pipeline.auth.bearer import resolve_bearer_token
 from urdu_pipeline.auth.hashing import BcryptHasher, PasswordHasher
 from urdu_pipeline.auth.sessions import resolve_session
 from urdu_pipeline.api.middleware.rate_limit import InMemoryRateLimiter, RateLimiter
+from urdu_pipeline.domain import ServiceIdentityId
 
 
 @dataclass
@@ -48,6 +50,8 @@ class AppState:
         default_factory=lambda: InMemoryRateLimiter(limit=10, window_seconds=60)
     )
     job_queue: JobQueue | None = None
+    service_auth_token: str | None = None
+    service_identity_id: ServiceIdentityId = field(default_factory=ServiceIdentityId.new)
 
 
 def get_app_state(request: Request) -> AppState:
@@ -152,6 +156,47 @@ def require_principal(
     return principal
 
 
+def get_principal_from_service_token(
+    request: Request,
+    state: Annotated[AppState, Depends(get_app_state)],
+) -> AuthPrincipal | None:
+    """Return a service AuthPrincipal when the Bearer token matches the
+    configured ``service_auth_token``.
+
+    Returns ``None`` if:
+    * ``service_auth_token`` is not configured (``None`` in ``AppState``).
+    * No ``Authorization: Bearer`` header is present.
+    * The token does not match (constant-time comparison to prevent timing attacks).
+    """
+    if state.service_auth_token is None:
+        return None
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    raw = auth[len("Bearer "):]
+    if not raw:
+        return None
+    if not secrets.compare_digest(raw.encode(), state.service_auth_token.encode()):
+        return None
+    return AuthPrincipal(
+        principal_id=state.service_identity_id,
+        kind="service",
+        scopes=frozenset({"processor"}),
+    )
+
+
+def require_service_principal(
+    principal: Annotated[AuthPrincipal | None, Depends(get_principal_from_service_token)],
+) -> AuthPrincipal:
+    """Require a service principal.  Raises 401 if the token is absent or invalid."""
+    if principal is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Service authentication required.",
+        )
+    return principal
+
+
 def require_session_principal(
     principal: Annotated[AuthPrincipal | None, Depends(get_principal_from_session)],
 ) -> AuthPrincipal:
@@ -178,8 +223,10 @@ __all__ = [
     "get_object_store",
     "get_password_hasher",
     "get_principal_from_bearer",
+    "get_principal_from_service_token",
     "get_principal_from_session",
     "get_secret_provider",
     "require_principal",
+    "require_service_principal",
     "require_session_principal",
 ]

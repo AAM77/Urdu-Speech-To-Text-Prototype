@@ -84,6 +84,15 @@ class Settings(BaseSettings):
     # ---- Job queue ----
     redis_url: str = Field(default="redis://localhost:6379/0")
 
+    # ---- Processor service auth ----
+    service_auth_token: str | None = Field(
+        default=None,
+        description=(
+            "Shared secret token for service-to-service auth used by the "
+            "background processor.  Required when running the processor command."
+        ),
+    )
+
     # -------------------------------------------------------------------------
     # Validators / derived helpers
     # -------------------------------------------------------------------------
