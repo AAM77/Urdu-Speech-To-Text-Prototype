@@ -18,7 +18,9 @@ import uuid
 from typing import Iterable
 
 from urdu_pipeline.artifacts.store import ArtifactStore, compute_text_checksum
+from urdu_pipeline.application.ports import ArtifactSink
 from urdu_pipeline.config.settings import Settings, get_settings
+from urdu_pipeline.infrastructure.filesystem import FilesystemArtifactSink
 from urdu_pipeline.logging_utils import get_logger
 from urdu_pipeline.schemas.manifests import ArtifactManifest
 from urdu_pipeline.schemas.transcripts import (
@@ -105,8 +107,17 @@ def _stitch(texts: Iterable[str]) -> tuple[str, list[int]]:
 
 
 class ReconcilerStage:
-    def __init__(self, *, store: ArtifactStore, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        store: ArtifactStore | None = None,
+        artifact_sink: ArtifactSink | None = None,
+        settings: Settings | None = None,
+    ) -> None:
+        if store is None and artifact_sink is None:
+            raise ValueError("ReconcilerStage requires an ArtifactStore or ArtifactSink.")
         self.store = store
+        self.artifact_sink = artifact_sink or FilesystemArtifactSink(store)
         self.settings = settings or get_settings()
 
     def run(self, raw: RawTranscriptArtifact) -> ReconciledTranscriptArtifact:
@@ -169,8 +180,11 @@ class ReconcilerStage:
             full_text_urdu=full_text,
             manifest=manifest,
         )
-        self.store.write_artifact(artifact, "reconciled_urdu_transcript.json")
-        self.store.write_markdown(_to_markdown(artifact), "reconciled_urdu_transcript.md")
+        self.artifact_sink.write_artifact(artifact, "reconciled_urdu_transcript.json")
+        self.artifact_sink.write_markdown(
+            _to_markdown(artifact),
+            "reconciled_urdu_transcript.md",
+        )
         return artifact
 
 

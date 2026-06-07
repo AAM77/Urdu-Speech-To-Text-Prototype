@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from pydantic import BaseModel
+
 from urdu_pipeline.artifacts.store import ArtifactStore
 from urdu_pipeline.schemas.manifests import ArtifactManifest
 from urdu_pipeline.schemas.transcripts import (
@@ -9,9 +13,31 @@ from urdu_pipeline.schemas.transcripts import (
     RawTranscriptChunk,
 )
 from urdu_pipeline.stages.transcript_reconciler import (
+    ReconcilerStage,
     _stitch,
     run_reconciler_stage,
 )
+
+
+class RecordingArtifactSink:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.artifacts: list[tuple[BaseModel, str, Path]] = []
+        self.markdown: list[tuple[str, str, Path]] = []
+
+    def write_artifact(self, model: BaseModel, filename: str) -> Path:
+        path = self.root / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(model.model_dump_json(), encoding="utf-8")
+        self.artifacts.append((model, filename, path))
+        return path
+
+    def write_markdown(self, text: str, filename: str) -> Path:
+        path = self.root / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        self.markdown.append((text, filename, path))
+        return path
 
 
 def _raw(chunks: list[str]) -> RawTranscriptArtifact:
@@ -89,3 +115,37 @@ def test_reconciler_writes_outputs():
     run_reconciler_stage(raw=raw, store=store)
     assert (store.paths.artifacts / "reconciled_urdu_transcript.json").exists()
     assert (store.paths.artifacts / "reconciled_urdu_transcript.md").exists()
+
+
+def test_reconciler_preserves_deterministic_shape_and_writes_through_sink(tmp_path):
+    raw = _raw(
+        [
+            "salam alaikum kaise hain aap aaj",
+            "kaise hain aap aaj kya hum baat kar sakte hain",
+        ]
+    )
+    sink = RecordingArtifactSink(tmp_path / "sink")
+
+    artifact = ReconcilerStage(artifact_sink=sink).run(raw)
+
+    assert artifact.artifact_type == "reconciled_urdu_transcript"
+    assert artifact.raw_transcript_artifact_id == "raw_test"
+    assert artifact.source_audio_hash == "h"
+    assert artifact.full_text_urdu == (
+        "salam alaikum kaise hain aap aaj\n\n"
+        "kya hum baat kar sakte hain"
+    )
+    assert [segment.segment_id for segment in artifact.segments] == [
+        "seg_0001",
+        "seg_0002",
+    ]
+    assert artifact.segments[1].warnings == ["trimmed_overlap_tokens=4"]
+    assert artifact.manifest.model_provider == "deterministic"
+    assert artifact.manifest.model_id == "rapidfuzz-overlap"
+    assert [entry[1] for entry in sink.artifacts] == [
+        "reconciled_urdu_transcript.json"
+    ]
+    assert sink.artifacts[0][0] is artifact
+    assert [entry[1] for entry in sink.markdown] == [
+        "reconciled_urdu_transcript.md"
+    ]
