@@ -41,6 +41,7 @@ from urdu_pipeline.domain import (
     JobStatus,
     ProviderRunId,
 )
+from urdu_pipeline.processor.idempotency import find_stage_artifact, stage_usage_key
 from urdu_pipeline.processor.lifecycle import FatalJobError
 from urdu_pipeline.providers.base import TranscriptionResult
 from urdu_pipeline.schemas.chunks import AudioChunk, ChunkManifestArtifact
@@ -110,6 +111,18 @@ def run_transcription_and_reconciliation(
     Any exception raised by ``chunk_transcriber_fn`` or ``reconciler_fn``
     propagates unchanged.
     """
+    existing = artifact_repo.list_run_artifacts(
+        user_id=job_record.user_id, run_id=job_record.run_id
+    )
+    raw_existing = find_stage_artifact(
+        existing, ArtifactStage.TRANSCRIBER, ArtifactType.RAW_URDU_TRANSCRIPT
+    )
+    rec_existing = find_stage_artifact(
+        existing, ArtifactStage.TRANSCRIPT_RECONCILER, ArtifactType.RECONCILED_URDU_TRANSCRIPT
+    )
+    if raw_existing and rec_existing:
+        return raw_existing, rec_existing
+
     raw_chunks: list[RawTranscriptChunk] = []
     sorted_chunks = sorted(chunk_manifest.chunks, key=lambda c: c.chunk_index)
 
@@ -139,6 +152,9 @@ def run_transcription_and_reconciliation(
                 model_id=result.model_id,
                 cost_usd=float(result.actual_usage.get("cost_usd", 0.0)),
                 usage=dict(result.actual_usage),
+                idempotency_key=stage_usage_key(
+                    job_record.run_id, "transcriber", chunk.chunk_id
+                ),
             )
         )
 

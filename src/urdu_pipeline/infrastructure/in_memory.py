@@ -654,10 +654,15 @@ class InMemoryUsageLedger:
 
     def __init__(self) -> None:
         self._records: list[UsageRecord] = []
+        self._idempotency_keys: set[str] = set()
 
     def record_usage(self, record: UsageRecord) -> None:
         if record.cost_usd < 0:
             raise ValueError("usage cost_usd must be non-negative.")
+        if record.idempotency_key is not None:
+            if record.idempotency_key in self._idempotency_keys:
+                return  # duplicate — discard silently
+            self._idempotency_keys.add(record.idempotency_key)
         self._records.append(record)
 
     def list_run_usage(self, *, user_id: UserId, run_id: RunId) -> Sequence[UsageRecord]:

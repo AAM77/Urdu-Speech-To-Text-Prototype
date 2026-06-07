@@ -203,6 +203,7 @@ class UsageRecord:
     cost_usd: float
     usage: Mapping[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=_utcnow)
+    idempotency_key: str | None = None
 
 
 @dataclass(frozen=True)

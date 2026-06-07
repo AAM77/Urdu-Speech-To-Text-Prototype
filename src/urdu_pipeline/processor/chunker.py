@@ -30,6 +30,7 @@ from urdu_pipeline.application.object_keys import ObjectKeyBuilder
 from urdu_pipeline.application.ports.services import JobRecord
 from urdu_pipeline.application.ports.storage import ArtifactReference, ArtifactRepository, ObjectStore, RunWorkspace
 from urdu_pipeline.domain import ArtifactId, ArtifactStage, ArtifactType
+from urdu_pipeline.processor.idempotency import find_stage_artifact
 from urdu_pipeline.schemas.chunks import ChunkManifestArtifact
 
 _DEFAULT_KEY_BUILDER = ObjectKeyBuilder()
@@ -80,6 +81,12 @@ def run_chunker_stage(
     ``FatalJobError`` propagates so ``claim_and_run`` marks the job terminal.
     """
     keys = key_builder or _DEFAULT_KEY_BUILDER
+
+    existing = artifact_repo.list_run_artifacts(
+        user_id=job_record.user_id, run_id=job_record.run_id
+    )
+    if found := find_stage_artifact(existing, ArtifactStage.CHUNKER, ArtifactType.CHUNK_MANIFEST):
+        return found
 
     manifest = chunker_fn(audio_path)
 

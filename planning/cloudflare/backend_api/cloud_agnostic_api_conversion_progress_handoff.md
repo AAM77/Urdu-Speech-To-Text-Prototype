@@ -1,6 +1,6 @@
 # Cloud-Agnostic API Conversion Progress Handoff
 
-Last updated: 2026-06-07 (session 5)
+Last updated: 2026-06-07 (session 6)
 
 This document summarizes what has been completed from
 `cloud_agnostic_api_conversion_stepwise_commit_plan.md`, why each part exists,
@@ -56,15 +56,15 @@ Completed through:
 - Stage 1
 - Stage 2
 - Stage 3 (all steps — 3.1.1 through 3.3.4 complete)
-- Stage 4 (complete) + Stage 5 through Step 5.2.4
+- Stage 4 (complete) + Stage 5 through Step 5.3.1
 
 Next step in the original plan:
 
-- Step 5.3.1: Add Idempotent Retry Behavior
+- Step 5.3.2: Add Temporary Object And Workspace Cleanup
 
 Most recent verification:
 
-- Combined unit + safe integration: `765 passed, 3 skipped`
+- Combined unit + safe integration: `767 passed` (0 skipped in unit run)
 - Skipped live-service smokes:
   - PostgreSQL smoke, guarded by `RUN_POSTGRES_MIGRATION_SMOKE=1`
   - MinIO/S3 smoke, guarded by `RUN_MINIO_OBJECT_STORE_SMOKE=1`
@@ -1197,7 +1197,7 @@ What was done:
   - Prompt safety: Urdu source text does not appear as a key in the translation
     artifact payload.
 
-- Test count: 765 passed, 3 skipped.
+- Test count: 765 passed at end of step (prior to 5.3.1).
 
 Why it was needed:
 
@@ -1209,6 +1209,79 @@ Why it was needed:
   $0.10 cap, article is blocked.
 - Injectable `translator_fn`/`article_fn` follow the same pattern as the other
   processor modules, making provider switching (Step 5.3+) a closure swap.
+
+### Step 5.3.1: Add Idempotent Retry Behavior
+
+What was done:
+
+- Wrote `tests/unit/test_processor_idempotency.py` (17 tests) before any
+  implementation, confirming failure with `ModuleNotFoundError`. Tests cover:
+  - `find_stage_artifact` — returns matching ref or `None`.
+  - `stage_usage_key` — deterministic, differs by stage/chunk, differs by run.
+  - `UsageRecord.idempotency_key` field — defaults to `None`, accepts string.
+  - `InMemoryUsageLedger.record_usage` deduplication — same key is a no-op,
+    different keys all recorded, no-key records always appended.
+  - `run_chunker_stage` — skips stage (no `chunker_fn` call, no save) when
+    CHUNK_MANIFEST already present in repo; only 1 save on second call.
+  - `run_transcription_and_reconciliation` — skips when both RAW_URDU_TRANSCRIPT
+    + RECONCILED_URDU_TRANSCRIPT exist; only 2 saves on retry (not 4).
+  - `run_translation_and_article` — skips when both ENGLISH_TRANSLATION +
+    FINAL_ARTICLE exist; only 2 saves on retry (not 4).
+
+- Created `src/urdu_pipeline/processor/idempotency.py` with:
+  - `find_stage_artifact(refs, stage, artifact_type) -> ArtifactReference | None`
+    Scans a list of `ArtifactReference` objects (from `list_run_artifacts`) and
+    returns the first match or `None`.
+  - `stage_usage_key(run_id, stage_label, item_id=None) -> str`
+    Returns a deterministic colon-separated key
+    (`"{run_id}:{stage_label}"` or `"{run_id}:{stage_label}:{item_id}"`)
+    suitable for `UsageRecord.idempotency_key`.
+
+- Modified `src/urdu_pipeline/application/ports/services.py`:
+  - Added `idempotency_key: str | None = None` field to `UsageRecord`
+    (frozen dataclass; default `None` preserves all existing call sites).
+
+- Modified `src/urdu_pipeline/infrastructure/in_memory.py`:
+  - `InMemoryUsageLedger` gained `_idempotency_keys: set[str]`.
+  - `record_usage` checks `record.idempotency_key`: if non-`None` and already
+    in the set, returns silently; otherwise adds key to set and appends record.
+
+- Modified `src/urdu_pipeline/processor/chunker.py`:
+  - At top of `run_chunker_stage`, calls `artifact_repo.list_run_artifacts()`
+    and `find_stage_artifact(…, CHUNKER, CHUNK_MANIFEST)`.
+  - Returns existing ref immediately if found (no `chunker_fn` invocation).
+
+- Modified `src/urdu_pipeline/processor/transcriber.py`:
+  - Checks for both RAW_URDU_TRANSCRIPT and RECONCILED_URDU_TRANSCRIPT at
+    top of `run_transcription_and_reconciliation`; short-circuits if both found.
+  - Per-chunk usage records now carry `idempotency_key=stage_usage_key(run_id,
+    "transcriber", chunk.chunk_id)`.
+
+- Modified `src/urdu_pipeline/processor/pipeline.py`:
+  - Checks for both ENGLISH_TRANSLATION and FINAL_ARTICLE at top of
+    `run_translation_and_article`; short-circuits if both found.
+  - `_record_stage_usage` gains optional `idempotency_key` parameter, forwarded
+    to `UsageRecord`.
+  - Translation usage key: `stage_usage_key(run_id, "translator")`.
+  - Article usage key: `stage_usage_key(run_id, "article_generator")`.
+
+- Test count: **767 passed**.
+
+Why it was needed:
+
+- Any processor crash after a stage completes but before the job is marked done
+  will trigger a retry. Without idempotency, each retry would re-run already-
+  completed stages, doubling artifact records and usage charges.
+- `list_run_artifacts` is the read-side guard: stages check their output before
+  running. The `idempotency_key` on `UsageRecord` is the write-side guard:
+  even if the check races with a concurrent write, the ledger discards
+  duplicates.
+- The `_ListingRepo` test double (defined in the test file) implements both
+  `save_artifact` and `list_run_artifacts`, enabling precise crash-retry
+  simulation without requiring a real database.
+- All existing stage function tests continue to pass unchanged because
+  `_FakeArtifactRepo.list_run_artifacts` returns `[]`, so the new idempotency
+  check is a no-op there (no existing artifacts → run normally).
 
 Provider-switch relevance:
 
@@ -2021,15 +2094,15 @@ Give the next AI these files first:
 
 Tell the next AI explicitly:
 
-- Current state: all unit and safe integration tests pass (765 passed, 3 skipped).
-- Stage 4 COMPLETE. Stage 5 Phase 5.2 is now COMPLETE (5.2.1–5.2.4 done).
-  Stage 5 in progress (Steps 5.1.1, 5.1.2, 5.2.1, 5.2.2, 5.2.3, and 5.2.4 done).
+- Current state: all unit tests pass (767 passed).
+- Stage 4 COMPLETE. Stage 5 Phase 5.2 COMPLETE (5.2.1–5.2.4). Step 5.3.1 COMPLETE.
+  Stage 5 in progress (Steps 5.1.1, 5.1.2, 5.2.1–5.2.4, 5.3.1 done).
 - **Deployment target: AWS Lightsail** (decided 2026-06-07). Cloudflare is no
   longer the target. The architecture remains cloud-agnostic; only Stage 8
   content and Stage 9 provisioning changed in the plan. No code changes needed
   — all completed work was already cloud-agnostic.
 - The goal is continuing the backend API conversion (Track B below).
-- Next step is Step 5.3.1: Add Idempotent Retry Behavior.
+- Next step is Step 5.3.2: Add Temporary Object And Workspace Cleanup.
 - IMPORTANT: Always write tests BEFORE implementation (strict TDD). Run them to
   confirm they fail, then implement to make them pass.
 - Preserve all prompt-safety and provider-request boundaries.
@@ -2051,17 +2124,16 @@ Track A: switch AI provider now
 Track B: continue backend conversion (currently active)
 
 - Stage 4 is COMPLETE. Stage 5 Phase 5.1 is COMPLETE (5.1.1 + 5.1.2 done).
-  Phase 5.2 is COMPLETE (Steps 5.2.1–5.2.4 all done).
+  Phase 5.2 is COMPLETE (Steps 5.2.1–5.2.4). Step 5.3.1 is COMPLETE.
 - **Deployment target changed to AWS Lightsail** (2026-06-07).
   - Stage 8 has been rewritten as "AWS Production Adapter Verification"
     (S3, RDS, Redis/SQS, Secrets Manager adapters).
   - Stage 9 provisioning updated for AWS resources.
   - Stage 8 (Cloudflare spike) is fully replaced — no work to carry forward.
-  - Nothing in Stages 1–5.2.4 needs to change.
-- Next step: Step 5.3.1 — Add Idempotent Retry Behavior.
-- Then pipeline integration (5.2.2–5.2.4), failure handling (5.3.x), local
-  parity stack (Stage 6), hardening (Stage 7), AWS adapter verification
-  (Stage 8), production deploy (Stage 9).
+  - Nothing in Stages 1–5.3.1 needs to change.
+- Next step: Step 5.3.2 — Add Temporary Object And Workspace Cleanup.
+- Then local parity stack (Stage 6), hardening (Stage 7), AWS adapter
+  verification (Stage 8), production deploy (Stage 9).
 
 Track C: stabilize and commit current work
 

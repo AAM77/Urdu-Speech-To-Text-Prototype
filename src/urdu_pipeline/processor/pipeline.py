@@ -41,6 +41,7 @@ from urdu_pipeline.application.ports.services import (
 )
 from urdu_pipeline.application.ports.storage import ArtifactReference, ArtifactRepository
 from urdu_pipeline.domain import ArtifactId, ArtifactStage, ArtifactType, ProviderRunId
+from urdu_pipeline.processor.idempotency import find_stage_artifact, stage_usage_key
 from urdu_pipeline.processor.lifecycle import FatalJobError
 from urdu_pipeline.schemas.articles import ArticleArtifact
 from urdu_pipeline.schemas.transcripts import ReconciledTranscriptArtifact
@@ -67,6 +68,7 @@ def _record_stage_usage(
     usage_ledger: UsageLedger,
     usage_dict: dict[str, Any],
     stage_label: str,
+    idempotency_key: str | None = None,
 ) -> None:
     model_id = str(usage_dict.get("model_id", "unknown"))
     cost_usd = float(usage_dict.get("cost_usd", 0.0))
@@ -81,6 +83,7 @@ def _record_stage_usage(
             model_id=model_id,
             cost_usd=cost_usd,
             usage=actual_usage,
+            idempotency_key=idempotency_key,
         )
     )
 
@@ -137,11 +140,27 @@ def run_translation_and_article(
         If the current run cost already exceeds the hard cap before either stage.
     Any exception from ``translator_fn`` or ``article_fn`` propagates unchanged.
     """
+    existing = artifact_repo.list_run_artifacts(
+        user_id=job_record.user_id, run_id=job_record.run_id
+    )
+    t_existing = find_stage_artifact(
+        existing, ArtifactStage.TRANSLATOR, ArtifactType.ENGLISH_TRANSLATION
+    )
+    a_existing = find_stage_artifact(
+        existing, ArtifactStage.ARTICLE_GENERATOR, ArtifactType.FINAL_ARTICLE
+    )
+    if t_existing and a_existing:
+        return t_existing, a_existing
+
     _enforce_budget(job_record, budget_service, stage="translation")
 
     translation_artifact, translation_usage = translator_fn(reconciled_artifact)
 
-    _record_stage_usage(job_record, usage_ledger, translation_usage, stage_label="translator")
+    _record_stage_usage(
+        job_record, usage_ledger, translation_usage,
+        stage_label="translator",
+        idempotency_key=stage_usage_key(job_record.run_id, "translator"),
+    )
 
     translation_ref = artifact_repo.save_artifact(
         user_id=job_record.user_id,
@@ -156,7 +175,11 @@ def run_translation_and_article(
 
     article_artifact, article_usage = article_fn(translation_artifact)
 
-    _record_stage_usage(job_record, usage_ledger, article_usage, stage_label="article_generator")
+    _record_stage_usage(
+        job_record, usage_ledger, article_usage,
+        stage_label="article_generator",
+        idempotency_key=stage_usage_key(job_record.run_id, "article_generator"),
+    )
 
     article_ref = artifact_repo.save_artifact(
         user_id=job_record.user_id,
