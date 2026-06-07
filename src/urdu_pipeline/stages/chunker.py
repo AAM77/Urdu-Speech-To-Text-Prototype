@@ -22,7 +22,12 @@ from urdu_pipeline.artifacts.store import (
     compute_file_hash,
     sanitize_filename,
 )
+from urdu_pipeline.application.ports import ArtifactSink, RunWorkspace
 from urdu_pipeline.config.settings import Settings, get_settings
+from urdu_pipeline.infrastructure.filesystem import (
+    FilesystemArtifactSink,
+    FilesystemRunWorkspace,
+)
 from urdu_pipeline.logging_utils import get_logger, safe_log_event
 from urdu_pipeline.schemas.chunks import (
     AudioChunk,
@@ -167,12 +172,21 @@ class ChunkerStage:
     def __init__(
         self,
         *,
-        store: ArtifactStore,
+        store: ArtifactStore | None = None,
+        workspace: RunWorkspace | None = None,
+        artifact_sink: ArtifactSink | None = None,
         settings: Settings | None = None,
         chunk_length_seconds: int | None = None,
         overlap_seconds: int | None = None,
     ) -> None:
+        if store is None and (workspace is None or artifact_sink is None):
+            raise ValueError(
+                "ChunkerStage requires either an ArtifactStore or both "
+                "RunWorkspace and ArtifactSink."
+            )
         self.store = store
+        self.workspace = workspace or FilesystemRunWorkspace.from_store(store)
+        self.artifact_sink = artifact_sink or FilesystemArtifactSink(store)
         self.settings = settings or get_settings()
         self.chunk_length_seconds = (
             chunk_length_seconds or self.settings.default_chunk_length_seconds
@@ -182,6 +196,7 @@ class ChunkerStage:
         )
 
     def run(self, audio_path: Path | str) -> ChunkManifestArtifact:
+        self.workspace.ensure()
         audio_path = Path(audio_path).expanduser().resolve()
         if not audio_path.exists():
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
@@ -194,7 +209,9 @@ class ChunkerStage:
             )
 
         # Copy input audio into the run for reproducibility.
-        copied = self.store.copy_input_audio(audio_path)
+        copied = self.workspace.input_path(sanitize_filename(audio_path.name))
+        copied.parent.mkdir(parents=True, exist_ok=True)
+        copied.write_bytes(audio_path.read_bytes())
         source_hash = compute_file_hash(copied)
         ext_for_chunks = audio_path.suffix.lstrip(".").lower() or "mp3"
 
@@ -207,7 +224,7 @@ class ChunkerStage:
         safe_log_event(
             _LOGGER,
             "chunker_planned",
-            run=self.store.run_id,
+            run=self.workspace.root.name,
             duration_s=int(duration_seconds),
             chunks=len(planned),
             chunk_len_s=self.chunk_length_seconds,
@@ -219,7 +236,8 @@ class ChunkerStage:
         max_bytes = int(self.settings.max_chunk_mb * 1024 * 1024)
         for p in planned:
             chunk_filename = sanitize_filename(f"chunk_{p.chunk_index:04d}.{ext_for_chunks}")
-            chunk_path = self.store.paths.chunks / chunk_filename
+            chunk_path = self.workspace.chunk_path(chunk_filename)
+            chunk_path.parent.mkdir(parents=True, exist_ok=True)
             _slice_chunk_with_ffmpeg(
                 source=copied,
                 target=chunk_path,
@@ -244,7 +262,7 @@ class ChunkerStage:
                     duration_ms=p.duration_ms,
                     overlap_before_ms=(self.overlap_seconds * 1000) if p.chunk_index > 1 else 0,
                     overlap_after_ms=(self.overlap_seconds * 1000) if p.chunk_index < len(planned) else 0,
-                    file_path=str(chunk_path.relative_to(self.store.paths.root)),
+                    file_path=str(chunk_path.relative_to(self.workspace.root)),
                     file_hash=compute_file_hash(chunk_path),
                     file_size_bytes=size,
                     audio_format=ext_for_chunks,
@@ -263,7 +281,7 @@ class ChunkerStage:
         )
 
         artifact = ChunkManifestArtifact(
-            source_audio_path=str(copied.relative_to(self.store.paths.root)),
+            source_audio_path=str(copied.relative_to(self.workspace.root)),
             source_audio_hash=source_hash,
             source_audio_duration_ms=int(round(duration_seconds * 1000)),
             source_audio_format=ext_for_chunks,
@@ -274,8 +292,8 @@ class ChunkerStage:
         )
 
         # Persist artifact + human summary
-        self.store.write_artifact(artifact, "chunk_manifest.json")
-        self.store.write_markdown(
+        self.artifact_sink.write_artifact(artifact, "chunk_manifest.json")
+        self.artifact_sink.write_markdown(
             _build_chunk_summary_md(artifact),
             "chunk_summary.md",
         )
